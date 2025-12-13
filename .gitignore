@@ -5,3 +5,7 @@ __pycache__/
 
 # Generated outputs
 pptx2nano_output*/
+
+# Streamlit / web UI caches
+style_examples_cache/
+.streamlit/

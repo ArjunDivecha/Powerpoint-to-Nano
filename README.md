@@ -12,6 +12,7 @@ Convert a PowerPoint deck (`.pptx`) into a brand-new set of "Nano Banana" style 
 - Keynote installed
 - Python 3.10+ recommended
 - Gemini API key
+- google-genai SDK version that supports Interactions API (see `requirements.txt`)
 
 ## Setup
 
@@ -21,6 +22,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # edit .env and add GEMINI_API_KEY
+```
+
+If you already installed dependencies earlier, upgrade to the required SDK version:
+
+```bash
+pip install -r requirements.txt --upgrade
 ```
 
 ## First-run macOS permissions (important)

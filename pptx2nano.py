@@ -58,6 +58,7 @@ from dotenv import find_dotenv, load_dotenv
 from google import genai
 from google.genai import types
 from PIL import Image
+import base64
 
 
 DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
@@ -186,7 +187,14 @@ def create_client() -> genai.Client:
         raise RuntimeError(
             "GEMINI_API_KEY is not set. Put it in a .env file (project folder or parent folder)."
         )
-    return genai.Client(api_key=api_key)
+    client = genai.Client(api_key=api_key)
+    # Interactions API is only available in newer google-genai versions.
+    if not hasattr(client, "interactions"):
+        raise RuntimeError(
+            "This script requires the Interactions API (google-genai>=1.55.0). "
+            "Upgrade your environment with: pip install -r requirements.txt --upgrade"
+        )
+    return client
 
 
 def export_slides_with_keynote(pptx_path: Path, rendered_dir: Path) -> list[Path]:
@@ -386,18 +394,30 @@ OUTPUT
 """.strip()
 
 
-def _extract_image_bytes_from_response(response) -> bytes:
-    if not response.candidates:
-        raise RuntimeError("No candidates returned from image model.")
-    content = response.candidates[0].content
-    if not content or not content.parts:
-        raise RuntimeError("Image model returned no content parts.")
+def _extract_image_bytes_from_interaction(interaction) -> tuple[bytes, str]:
+    """Extract image bytes from an Interactions API response.
 
-    for part in content.parts:
-        if part.inline_data and part.inline_data.data:
-            return part.inline_data.data
+    Per Interactions API docs, interaction.outputs contains typed outputs.
+    Image outputs have:
+    - type == "image"
+    - data as base64
+    - mime_type like "image/png"
+    """
 
-    raise RuntimeError("No inline image data returned from image model response.")
+    outputs = getattr(interaction, "outputs", None)
+    if not outputs:
+        raise RuntimeError("Interactions API returned no outputs.")
+
+    for out in outputs:
+        out_type = getattr(out, "type", None)
+        if out_type == "image":
+            mime_type = getattr(out, "mime_type", None) or "application/octet-stream"
+            data_b64 = getattr(out, "data", None)
+            if not data_b64:
+                raise RuntimeError("Image output had no data.")
+            return base64.b64decode(data_b64), mime_type
+
+    raise RuntimeError("No image output found in Interactions API outputs.")
 
 
 def generate_one_slide(
@@ -426,19 +446,19 @@ def generate_one_slide(
     image_bytes = job.rendered_path.read_bytes()
     mime_type = mimetypes.guess_type(job.rendered_path.name)[0] or "application/octet-stream"
 
+    # Interactions API requires google-genai>=1.55.0.
+    # We pass the slide image as base64 and request IMAGE modality.
     client = create_client()
-    response = client.models.generate_content(
+    interaction = client.interactions.create(
         model=image_model,
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-            prompt,
+        input=[
+            {"type": "image", "data": base64.b64encode(image_bytes).decode("utf-8"), "mime_type": mime_type},
+            {"type": "text", "text": prompt},
         ],
-        config=types.GenerateContentConfig(
-            response_modalities=["IMAGE"],
-        ),
+        response_modalities=["IMAGE"],
     )
 
-    out_image_bytes = _extract_image_bytes_from_response(response)
+    out_image_bytes, _out_mime = _extract_image_bytes_from_interaction(interaction)
 
     job.generated_path.parent.mkdir(parents=True, exist_ok=True)
     img = Image.open(BytesIO(out_image_bytes))
