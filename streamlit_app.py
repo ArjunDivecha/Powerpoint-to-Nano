@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import base64
 import subprocess
+import time
 from io import BytesIO
 from pathlib import Path
 
@@ -330,53 +331,125 @@ def main() -> None:
     c1, c2, c3 = st.columns([1, 1, 2])
 
     with c1:
-        slide_n = st.selectbox("Slide", slide_numbers, index=0)
+        gen_target = st.selectbox("Slide", ["ALL"] + slide_numbers, index=1)
+        overwrite_existing = st.checkbox(
+            "Overwrite slides that were already generated",
+            value=False,
+            help="When unchecked, Generate ALL will skip slides that already have a generated image so you can keep different styles per slide.",
+        )
 
-    rendered_path = rendered_paths[slide_n - 1]
+    # When ALL is selected, we don't show a single rendered_path preview.
+    slide_n = None if gen_target == "ALL" else int(gen_target)
+    rendered_path = None if slide_n is None else rendered_paths[slide_n - 1]
 
     with c2:
-        st.image(str(rendered_path), caption=f"Original slide {slide_n}")
+        if slide_n is None:
+            st.caption("Generating ALL will iterate through the full deck.")
+        else:
+            st.image(str(rendered_path), caption=f"Original slide {slide_n}")
 
     with c3:
-        prev_id = st.session_state["interaction_ids"].get(slide_n)
-        if st.button("Generate / Regenerate this slide", use_container_width=True):
-            try:
-                prog = st.progress(0)
-                with st.spinner("Calling Gemini…"):
-                    prog.progress(20)
-                    img_bytes, new_id = _call_slide_image_model(
-                        slide_index_1based=slide_n,
-                        rendered_path=rendered_path,
-                        image_model=image_model,
-                        style=style,
-                        total_slides=total_slides,
-                        previous_interaction_id=prev_id,
-                    )
-                    prog.progress(90)
-                    st.session_state["generated_images"][slide_n] = img_bytes
-                    st.session_state["interaction_ids"][slide_n] = new_id
-                    st.session_state["last_preview_pdf"] = None
-                    prog.progress(100)
-                st.success(f"Generated slide {slide_n}.")
-            except Exception as e:
-                st.error(str(e))
+        if slide_n is None:
+            if st.button("Generate ALL slides (skip existing unless overwrite checked)", use_container_width=True):
+                try:
+                    t0 = time.time()
+                    durations: list[float] = []
+                    prog = st.progress(0)
+                    status = st.empty()
 
-        gen_bytes = st.session_state["generated_images"].get(slide_n)
-        if gen_bytes:
-            st.image(gen_bytes, caption=f"Generated slide {slide_n}")
+                    total = len(slide_numbers)
+                    done = 0
+                    for n in slide_numbers:
+                        already = n in st.session_state["generated_images"]
+                        if already and not overwrite_existing:
+                            done += 1
+                            prog.progress(int((done / total) * 100))
+                            status.caption(f"Skipped existing slide {n} ({done}/{total})")
+                            continue
+
+                        rp = rendered_paths[n - 1]
+                        prev_id = st.session_state["interaction_ids"].get(n)
+
+                        status.caption(f"Generating slide {n} ({done + 1}/{total})")
+                        t_slide = time.time()
+                        img_bytes, new_id = _call_slide_image_model(
+                            slide_index_1based=n,
+                            rendered_path=rp,
+                            image_model=image_model,
+                            style=style,
+                            total_slides=total_slides,
+                            previous_interaction_id=prev_id,
+                        )
+                        dt = time.time() - t_slide
+                        durations.append(dt)
+
+                        st.session_state["generated_images"][n] = img_bytes
+                        st.session_state["interaction_ids"][n] = new_id
+                        st.session_state["last_preview_pdf"] = None
+
+                        done += 1
+                        avg = sum(durations) / len(durations) if durations else 0.0
+                        remaining = max(0, total - done)
+                        eta = remaining * avg
+                        prog.progress(int((done / total) * 100))
+                        status.caption(
+                            f"Generated slide {n} ({done}/{total}) | last={dt:.1f}s avg={avg:.1f}s ETA={eta:.0f}s"
+                        )
+
+                    prog.progress(100)
+                    total_time = time.time() - t0
+                    status.success(f"Done. Generate ALL finished in {total_time:.1f}s")
+                except Exception as e:
+                    st.error(str(e))
         else:
-            st.caption("No generated image for this slide yet.")
+            prev_id = st.session_state["interaction_ids"].get(slide_n)
+            if st.button("Generate / Regenerate this slide", use_container_width=True):
+                try:
+                    prog = st.progress(0)
+                    with st.spinner("Calling Gemini…"):
+                        prog.progress(20)
+                        img_bytes, new_id = _call_slide_image_model(
+                            slide_index_1based=slide_n,
+                            rendered_path=rendered_path,
+                            image_model=image_model,
+                            style=style,
+                            total_slides=total_slides,
+                            previous_interaction_id=prev_id,
+                        )
+                        prog.progress(90)
+                        st.session_state["generated_images"][slide_n] = img_bytes
+                        st.session_state["interaction_ids"][slide_n] = new_id
+                        st.session_state["last_preview_pdf"] = None
+                        prog.progress(100)
+                    st.success(f"Generated slide {slide_n}.")
+                except Exception as e:
+                    st.error(str(e))
+
+            gen_bytes = st.session_state["generated_images"].get(slide_n)
+            if gen_bytes:
+                st.image(gen_bytes, caption=f"Generated slide {slide_n}")
+            else:
+                st.caption("No generated image for this slide yet.")
 
     st.divider()
 
     st.subheader("4) Preview and Save PDF")
 
-    include_slides = st.multiselect(
-        "Slides to include in PDF",
-        options=slide_numbers,
-        default=slide_numbers,
+    preview_mode = st.selectbox(
+        "Include slides",
+        options=["ALL", "Custom"],
+        index=0,
     )
-    include_slides_sorted = sorted(include_slides)
+    if preview_mode == "ALL":
+        include_slides_sorted = slide_numbers
+        st.caption("Preview will include all slides (that have generated images).")
+    else:
+        include_slides = st.multiselect(
+            "Slides to include in PDF",
+            options=slide_numbers,
+            default=slide_numbers,
+        )
+        include_slides_sorted = sorted(include_slides)
 
     b1, b2 = st.columns([1, 1])
 

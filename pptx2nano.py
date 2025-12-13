@@ -71,6 +71,35 @@ BUILTIN_STYLES: dict[str, str] = {
     "minimalist": "Clean white/gray palette, thin lines, lots of whitespace, simple sans-serif fonts",
     "blueprint": "Technical drawing style, blue background, white lines, grid paper, architectural feel",
     "hand-drawn": "Sketchy lines, imperfect shapes, notebook paper feel, casual doodle aesthetic",
+    # Data & Business Visualization (Nano Banana Pro)
+    "minimalist-infographic": "Swiss-style infographic: ample whitespace, clean neutral palette, simple sans-serif typography, uncluttered data summary",
+    "corporate-dashboard": "SaaS/analytics dashboard look: dark mode UI, structured charts, high-contrast neon accents (electric blue / emerald)",
+    "timeline-roadmap": "Roadmap timeline with milestone nodes (horizontal/vertical), progressive flow, clear phases and dates",
+    "technical-blueprint": "Engineering schematic: white lines on blue grid, right-angle connectors, geometric precision (architectural/technical)",
+    "whiteboard-strategy": "Hand-drawn sketchnote on whiteboard: marker textures, arrows, friendly low-fidelity strategy sketches",
+    "comparison-split": "Symmetric split layout (Option A vs Option B): clear side-by-side contrast, distinct color coding, balanced structure",
+    "process-flow": "Flowchart/system diagram: rectangles for steps, diamonds for decisions, directional arrows, if/then logic",
+    "multi-layer-venn": "3+ set Venn with transparent overlaps (multiply), labeled intersections, clean hierarchy",
+    # Artistic & Illustration Styles
+    "lego-brick-builder": "Plastic brick build: bright primary colors, snap-together LEGO-like forms, toy proportions",
+    "studio-ghibli-anime": "Soft watercolor anime: whimsical organic shapes, lush green backgrounds, 80s/90s Studio Ghibli vibe",
+    "neon-cyberpunk": "Neon night cyberpunk: pink/purple/cyan LEDs, rain-slick streets, glowing tech, futuristic cityscape",
+    "3d-claymation": "Clay/plasticine look: rounded edges, subtle fingerprint textures, miniature tilt-shift lighting",
+    "pixel-art-8bit": "Retro 8-bit pixel art: low-res jagged edges, limited NES/SNES-like palette, game UI sensibility",
+    "comic-book-hero": "Comic ink style: heavy outlines, cross-hatching shadows, Ben-Day dots, dramatic angles",
+    "vintage-travel-poster": "Art Deco travel poster: flat bold colors, geometric composition, integrated blocky title text",
+    "graffiti-street-art": "Spray paint on concrete: wild-style lettering, drips, vibrant chaotic color schemes",
+    "paper-cutout-origami": "Layered paper craft: colored sheets, drop-shadows for depth, cut edges, origami-like forms",
+    # Photorealistic & Cinematic Styles
+    "cinematic-realism": "High-end cinema camera realism: controlled lighting (golden/blue hour), shallow depth of field, bokeh",
+    "analog-film": "35mm film emulation: subtle grain, light leaks, vignette, softer nostalgic color grading",
+    "product-hero-shot": "Studio product hero shot: pristine background, controlled lighting, sharp reflections, e-commerce look",
+    "macro-close-up": "Extreme macro detail: visible textures/fibers, very shallow DOF, strongly blurred background",
+    "knitted-doll-amigurumi": "Crocheted yarn doll: visible fibers, button eyes, soft fuzzy lighting, handcrafted texture",
+    # Text-Heavy Formats
+    "editorial-magazine": "Magazine layout: central hero image, bold serif headline, multi-column body text, editorial grid",
+    "chalkboard-menu": "Chalkboard/restaurant menu: slate texture, hand lettering/calligraphy, chalk strokes",
+    "instructional-manual": "IKEA-style manual: black-and-white line art, simple figures, arrows, assembly instructions",
 }
 
 
