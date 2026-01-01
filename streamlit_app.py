@@ -43,7 +43,7 @@ from PIL import Image
 import pptx2nano
 
 
-def _pick_pptx_path() -> Path | None:
+def _pick_input_file() -> Path | None:
     # IMPORTANT: On macOS, Streamlit runs this script in a worker thread.
     # tkinter uses AppKit and will crash with:
     #   "NSWindow should only be instantiated on the main thread!"
@@ -52,7 +52,7 @@ def _pick_pptx_path() -> Path | None:
     # Return POSIX path directly, and handle user cancel (AppleScript error -128)
     # by returning an empty string.
     applescript = r'''try
-  set f to choose file with prompt "Select a PowerPoint (.pptx)"
+  set f to choose file with prompt "Select a file (.pptx, .pdf, .gif, .txt)"
   return POSIX path of f
 on error number -128
   return ""
@@ -72,7 +72,8 @@ end try'''
 
 
 def _ensure_session_defaults() -> None:
-    st.session_state.setdefault("pptx_path", None)
+    st.session_state.setdefault("input_path", None)
+    st.session_state.setdefault("input_type", None)
     st.session_state.setdefault("rendered_paths", None)
     st.session_state.setdefault("generated_images", {})
     st.session_state.setdefault("interaction_ids", {})
@@ -80,8 +81,9 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("style_example_set", "slide1")
 
 
-def _reset_for_new_pptx(pptx_path: Path) -> None:
-    st.session_state["pptx_path"] = pptx_path
+def _reset_for_new_input(input_path: Path, input_type: str) -> None:
+    st.session_state["input_path"] = input_path
+    st.session_state["input_type"] = input_type
     st.session_state["rendered_paths"] = None
     st.session_state["generated_images"] = {}
     st.session_state["interaction_ids"] = {}
@@ -169,6 +171,110 @@ OUTPUT
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(out.getvalue())
     return cache_path.read_bytes()
+
+
+def _process_pdf_input(pdf_path: Path, output_dir: Path) -> list[Path]:
+    """Extract pages from PDF as images."""
+    from pdf2image import convert_from_path
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images = convert_from_path(pdf_path, dpi=150)
+    
+    rendered_paths = []
+    for i, img in enumerate(images, 1):
+        out_path = output_dir / f"page_{i:03d}.png"
+        img.save(out_path, "PNG")
+        rendered_paths.append(out_path)
+    
+    return rendered_paths
+
+
+def _process_gif_input(gif_path: Path, output_dir: Path) -> list[Path]:
+    """Extract frames from GIF as images."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    with Image.open(gif_path) as img:
+        rendered_paths = []
+        frame_num = 0
+        
+        try:
+            while True:
+                img.seek(frame_num)
+                out_path = output_dir / f"frame_{frame_num + 1:03d}.png"
+                # Convert to RGB if necessary (GIFs can be in palette mode)
+                frame = img.convert("RGB")
+                frame.save(out_path, "PNG")
+                rendered_paths.append(out_path)
+                frame_num += 1
+        except EOFError:
+            pass
+    
+    return rendered_paths
+
+
+def _process_text_input(text_path: Path, output_dir: Path) -> list[Path]:
+    """Convert text file to images (one page per paragraph or chunk)."""
+    from PIL import ImageDraw, ImageFont
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Read text file
+    text_content = text_path.read_text(encoding='utf-8')
+    
+    # Split into chunks (by double newline or every ~500 chars)
+    paragraphs = [p.strip() for p in text_content.split('\n\n') if p.strip()]
+    if not paragraphs:
+        # Fallback: split by single newlines
+        paragraphs = [p.strip() for p in text_content.split('\n') if p.strip()]
+    
+    rendered_paths = []
+    
+    # Create images for each paragraph
+    for i, para in enumerate(paragraphs, 1):
+        # Create a white image
+        img_width, img_height = 1920, 1080
+        img = Image.new('RGB', (img_width, img_height), color='white')
+        draw = ImageDraw.Draw(img)
+        
+        # Try to use a system font, fallback to default
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+        except:
+            font = ImageFont.load_default()
+        
+        # Add text with word wrapping
+        margin = 100
+        max_width = img_width - 2 * margin
+        y_text = margin
+        
+        words = para.split()
+        lines = []
+        current_line = []
+        
+        for word in words:
+            test_line = ' '.join(current_line + [word])
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            if bbox[2] - bbox[0] <= max_width:
+                current_line.append(word)
+            else:
+                if current_line:
+                    lines.append(' '.join(current_line))
+                current_line = [word]
+        
+        if current_line:
+            lines.append(' '.join(current_line))
+        
+        # Draw lines
+        for line in lines:
+            draw.text((margin, y_text), line, fill='black', font=font)
+            y_text += 60
+        
+        # Save image
+        out_path = output_dir / f"text_{i:03d}.png"
+        img.save(out_path, "PNG")
+        rendered_paths.append(out_path)
+    
+    return rendered_paths
 
 
 def _call_slide_image_model(
@@ -292,7 +398,7 @@ def main() -> None:
         <div style="padding: 1rem 0 0.5rem 0;">
           <h1 style="margin: 0;">PowerPoint to Nano</h1>
           <p style="margin: 0.25rem 0 0 0; color: #6b7280;">
-            Pick a deck, pick a style, generate one slide at a time, preview the PDF, then save.
+            Pick a file (PPTX, PDF, GIF, or TXT), pick a style, generate pages, preview the PDF, then save.
           </p>
         </div>
         """,
@@ -302,39 +408,64 @@ def main() -> None:
     left, right = st.columns([1, 1])
 
     with left:
-        st.subheader("1) Choose a PowerPoint")
-        if st.button("Choose .pptx file…", use_container_width=True):
+        st.subheader("1) Choose Input File")
+        if st.button("Choose file (.pptx, .pdf, .gif, .txt)…", use_container_width=True):
             try:
-                picked = _pick_pptx_path()
+                picked = _pick_input_file()
                 if picked is None:
                     st.info("No file selected.")
                 else:
-                    if picked.suffix.lower() != ".pptx":
-                        st.error("Please select a .pptx file.")
+                    suffix = picked.suffix.lower()
+                    if suffix not in [".pptx", ".pdf", ".gif", ".txt"]:
+                        st.error("Please select a .pptx, .pdf, .gif, or .txt file.")
                     else:
-                        _reset_for_new_pptx(picked)
+                        _reset_for_new_input(picked, suffix[1:])  # Remove the dot
             except Exception as e:
                 st.error(str(e))
 
-        pptx_path = st.session_state.get("pptx_path")
-        if pptx_path:
-            st.success(f"Selected: {pptx_path}")
+        input_path = st.session_state.get("input_path")
+        input_type = st.session_state.get("input_type")
+        if input_path:
+            st.success(f"Selected: {input_path}")
+            st.caption(f"Type: {input_type.upper()}")
 
-        st.subheader("2) Render slides")
-        if st.button("Render slides with Keynote", use_container_width=True, disabled=not bool(pptx_path)):
+        st.subheader("2) Process Input")
+        process_label = {
+            "pptx": "Render slides with Keynote",
+            "pdf": "Extract PDF pages",
+            "gif": "Extract GIF frames",
+            "txt": "Convert text to images",
+        }.get(input_type, "Process file")
+        
+        if st.button(process_label, use_container_width=True, disabled=not bool(input_path)):
             try:
-                with st.spinner("Rendering slides using Keynote…"):
-                    out_dir = Path(__file__).resolve().parent / "pptx2nano_output_streamlit"
-                    rendered_dir = out_dir / Path(pptx_path).stem / "rendered"
-                    rendered_paths = pptx2nano.export_slides_with_keynote(Path(pptx_path), rendered_dir)
-                    st.session_state["rendered_paths"] = rendered_paths
-                st.success(f"Rendered {len(rendered_paths)} slides.")
+                out_dir = Path(__file__).resolve().parent / "pptx2nano_output_streamlit"
+                rendered_dir = out_dir / Path(input_path).stem / "rendered"
+                
+                if input_type == "pptx":
+                    with st.spinner("Rendering slides using Keynote…"):
+                        rendered_paths = pptx2nano.export_slides_with_keynote(Path(input_path), rendered_dir)
+                elif input_type == "pdf":
+                    with st.spinner("Extracting PDF pages…"):
+                        rendered_paths = _process_pdf_input(Path(input_path), rendered_dir)
+                elif input_type == "gif":
+                    with st.spinner("Extracting GIF frames…"):
+                        rendered_paths = _process_gif_input(Path(input_path), rendered_dir)
+                elif input_type == "txt":
+                    with st.spinner("Converting text to images…"):
+                        rendered_paths = _process_text_input(Path(input_path), rendered_dir)
+                else:
+                    st.error(f"Unsupported file type: {input_type}")
+                    return
+                
+                st.session_state["rendered_paths"] = rendered_paths
+                st.success(f"Processed {len(rendered_paths)} pages/slides/frames.")
             except Exception as e:
                 st.error(str(e))
 
         rendered_paths = st.session_state.get("rendered_paths")
         if rendered_paths:
-            st.caption(f"Slides rendered: {len(rendered_paths)}")
+            st.caption(f"Pages rendered: {len(rendered_paths)}")
 
     with right:
         st.subheader("Style")
@@ -370,10 +501,10 @@ def main() -> None:
 
     st.divider()
 
-    pptx_path = st.session_state.get("pptx_path")
+    input_path = st.session_state.get("input_path")
     rendered_paths = st.session_state.get("rendered_paths")
-    if not pptx_path or not rendered_paths:
-        st.info("Select a PPTX and render slides to begin.")
+    if not input_path or not rendered_paths:
+        st.info("Select a file and process it to begin.")
         return
 
     total_slides = len(rendered_paths)
@@ -517,11 +648,11 @@ def main() -> None:
 
     with b2:
         preview_bytes = st.session_state.get("last_preview_pdf")
-        can_save = bool(preview_bytes) and bool(pptx_path)
-        if st.button("Save PDF next to PPTX (overwrite)", use_container_width=True, disabled=not can_save):
+        can_save = bool(preview_bytes) and bool(input_path)
+        if st.button("Save PDF next to input file (overwrite)", use_container_width=True, disabled=not can_save):
             try:
-                pptx_p = Path(pptx_path)
-                out_path = pptx_p.parent / f"{pptx_p.stem}_nano.pdf"
+                input_p = Path(input_path)
+                out_path = input_p.parent / f"{input_p.stem}_nano.pdf"
                 out_path.write_bytes(preview_bytes)
                 st.success(f"Saved: {out_path}")
             except Exception as e:
@@ -533,7 +664,7 @@ def main() -> None:
         st.download_button(
             label="Download preview PDF",
             data=preview_bytes,
-            file_name=f"{Path(pptx_path).stem}_nano.pdf",
+            file_name=f"{Path(input_path).stem}_nano.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
