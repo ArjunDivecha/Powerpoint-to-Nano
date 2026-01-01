@@ -82,6 +82,7 @@ BUILTIN_STYLES: dict[str, str] = {
     "multi-layer-venn": "3+ set Venn with transparent overlaps (multiply), labeled intersections, clean hierarchy",
     # Artistic & Illustration Styles
     "lego-brick-builder": "Plastic brick build: bright primary colors, snap-together LEGO-like forms, toy proportions",
+    "lego-diorama": "Physical LEGO diorama: real brick construction on colored baseplates, minifigures and accessories, isometric overhead view, distinct colored zones (blue/orange/red/purple/teal), realistic lighting and shadows, tangible 3D scene with depth",
     "studio-ghibli-anime": "Soft watercolor anime: whimsical organic shapes, lush green backgrounds, 80s/90s Studio Ghibli vibe",
     "neon-cyberpunk": "Neon night cyberpunk: pink/purple/cyan LEDs, rain-slick streets, glowing tech, futuristic cityscape",
     "3d-claymation": "Clay/plasticine look: rounded edges, subtle fingerprint textures, miniature tilt-shift lighting",
