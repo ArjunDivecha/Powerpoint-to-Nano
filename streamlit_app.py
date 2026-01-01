@@ -79,6 +79,8 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("interaction_ids", {})
     st.session_state.setdefault("last_preview_pdf", None)
     st.session_state.setdefault("style_example_set", "slide1")
+    st.session_state.setdefault("selected_style", "lego")
+    st.session_state.setdefault("selected_slide", 1)
 
 
 def _reset_for_new_input(input_path: Path, input_type: str) -> None:
@@ -665,7 +667,17 @@ def main() -> None:
             help="Switch which cached style thumbnails you want to see.",
         )
 
-        style_choice = st.selectbox("Choose a style", _style_options(), index=0)
+        # Get current style index to maintain scroll position
+        style_options = _style_options()
+        current_style = st.session_state.get("selected_style", "lego")
+        try:
+            current_index = style_options.index(current_style)
+        except ValueError:
+            current_index = 0
+        
+        style_choice = st.selectbox("Choose a style", style_options, index=current_index)
+        st.session_state["selected_style"] = style_choice
+        
         custom_style = ""
         if style_choice == "custom":
             custom_style = st.text_input("Custom style", value="")
@@ -703,7 +715,20 @@ def main() -> None:
     c1, c2, c3 = st.columns([1, 1, 2])
 
     with c1:
-        gen_target = st.selectbox("Slide", ["ALL"] + slide_numbers, index=1)
+        # Get current slide index to maintain scroll position
+        slide_options = ["ALL"] + slide_numbers
+        current_slide = st.session_state.get("selected_slide", 1)
+        try:
+            if current_slide == "ALL":
+                current_slide_index = 0
+            else:
+                current_slide_index = slide_options.index(current_slide)
+        except ValueError:
+            current_slide_index = 1
+        
+        gen_target = st.selectbox("Slide", slide_options, index=current_slide_index)
+        st.session_state["selected_slide"] = gen_target
+        
         overwrite_existing = st.checkbox(
             "Overwrite slides that were already generated",
             value=False,
