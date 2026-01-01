@@ -658,8 +658,8 @@ def main() -> None:
         if rendered_paths:
             st.caption(f"Pages rendered: {len(rendered_paths)}")
 
-    with right:
-        st.subheader("Style")
+    with left:
+        st.subheader("Style Example")
         st.session_state["style_example_set"] = st.selectbox(
             "Example set",
             options=["slide1", "slide2"],
@@ -667,23 +667,11 @@ def main() -> None:
             help="Switch which cached style thumbnails you want to see.",
         )
 
-        # Button grid for style selection (no scrolling needed!)
+        # Style selection setup
         style_options = _style_options()
         current_style = st.session_state.get("selected_style", "lego")
         
-        st.caption("Choose a style:")
-        cols = st.columns(3)
-        
-        for i, style in enumerate(style_options):
-            with cols[i % 3]:
-                # Use buttons instead of radio buttons for better control
-                button_type = "primary" if style == current_style else "secondary"
-                if st.button(style, key=f"style_btn_{i}", type=button_type, use_container_width=True):
-                    st.session_state["selected_style"] = style
-                    st.rerun()
-        
-        style_choice = st.session_state.get("selected_style", "lego")
-        
+        style_choice = current_style
         custom_style = ""
         if style_choice == "custom":
             custom_style = st.text_input("Custom style", value="")
@@ -694,6 +682,7 @@ def main() -> None:
         if style_choice != "custom":
             st.caption(pptx2nano.BUILTIN_STYLES.get(style_choice, ""))
 
+        # Display style example image
         if style:
             try:
                 with st.spinner("Loading style example…"):
@@ -702,9 +691,22 @@ def main() -> None:
                         image_model=image_model,
                         style_example_set=st.session_state.get("style_example_set", "slide1"),
                     )
-                st.image(example_bytes, caption=f"Example style: {style}")
+                st.image(example_bytes, caption=f"Example: {style}", use_container_width=True)
             except Exception as e:
                 st.warning(f"Could not load style example: {e}")
+
+    with right:
+        st.subheader("Style")
+        st.caption("Choose a style:")
+        cols = st.columns(2)
+        
+        for i, style_name in enumerate(style_options):
+            with cols[i % 2]:
+                # Use buttons instead of radio buttons for better control
+                button_type = "primary" if style_name == current_style else "secondary"
+                if st.button(style_name, key=f"style_btn_{i}", type=button_type, use_container_width=True):
+                    st.session_state["selected_style"] = style_name
+                    st.rerun()
 
     st.divider()
 
