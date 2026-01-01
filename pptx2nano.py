@@ -84,6 +84,7 @@ BUILTIN_STYLES: dict[str, str] = {
     "lego-brick-builder": "Plastic brick build: bright primary colors, snap-together LEGO-like forms, toy proportions",
     "lego-diorama": "A photorealistic isometric diorama made entirely of LEGO bricks, organized into distinct color-coded vertical lanes on a large baseplate. Miniature LEGO machinery, conveyor belts, robotic arms, and server racks connected by arrows. LEGO minifigures posed working in each zone. Small white tiles display legible text labels and filenames. Macro photography, tilt-shift effect with shallow depth of field, bright studio lighting, sharp plastic textures, high contrast, 8k resolution, organized industrial aesthetic",
     "studio-ghibli-anime": "Soft watercolor anime: whimsical organic shapes, lush green backgrounds, 80s/90s Studio Ghibli vibe",
+    "ghibli-pride": "Studio Ghibli anime aesthetic with MAXIMUM rainbow vibrancy: explosive pride flag colors (hot pink, electric purple, bright cyan, sunshine yellow), joyful celebratory energy, sparkles and glitter effects, whimsical flowing ribbons, radiant gradients, love and joy radiating from every element, soft watercolor meets neon brilliance, euphoric and fabulous",
     "neon-cyberpunk": "Neon night cyberpunk: pink/purple/cyan LEDs, rain-slick streets, glowing tech, futuristic cityscape",
     "3d-claymation": "Clay/plasticine look: rounded edges, subtle fingerprint textures, miniature tilt-shift lighting",
     "pixel-art-8bit": "Retro 8-bit pixel art: low-res jagged edges, limited NES/SNES-like palette, game UI sensibility",
