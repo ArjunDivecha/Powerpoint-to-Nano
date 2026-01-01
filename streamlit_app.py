@@ -77,6 +77,7 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("generated_images", {})
     st.session_state.setdefault("interaction_ids", {})
     st.session_state.setdefault("last_preview_pdf", None)
+    st.session_state.setdefault("style_example_set", "slide1")
 
 
 def _reset_for_new_pptx(pptx_path: Path) -> None:
@@ -98,20 +99,47 @@ def _get_selected_style(style_choice: str, custom_style: str) -> str | None:
     return style_choice
 
 
-def _style_example_cache_path(style: str) -> Path:
+def _style_example_cache_root() -> Path:
+    return Path(__file__).resolve().parent / "style_examples_cache"
+
+
+def _style_example_cache_base(style_example_set: str) -> Path:
+    root = _style_example_cache_root()
+    if style_example_set == "slide2":
+        return root / "slide2"
+    if style_example_set == "slide1":
+        return root / "slide1"
+    return root
+
+
+def _style_example_cache_path(style: str, *, style_example_set: str) -> Path:
     safe = "".join(ch for ch in style.lower() if ch.isalnum() or ch in ("-", "_"))
     if not safe:
         safe = "style"
-    return Path(__file__).resolve().parent / "style_examples_cache" / f"{safe}.png"
+    return _style_example_cache_base(style_example_set) / f"{safe}.png"
 
 
-def _get_or_create_style_example(style: str, image_model: str) -> bytes:
-    cache_path = _style_example_cache_path(style)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-
+def _get_or_create_style_example(style: str, image_model: str, *, style_example_set: str) -> bytes:
+    cache_path = _style_example_cache_path(style, style_example_set=style_example_set)
     if cache_path.exists():
         return cache_path.read_bytes()
 
+    # Backward-compatible fallback: if slide1 set is selected but hasn't been copied yet,
+    # fall back to the legacy root cache.
+    if style_example_set == "slide1":
+        legacy_path = _style_example_cache_root() / f"{_safe_style_filename(style)}.png"
+        if legacy_path.exists():
+            return legacy_path.read_bytes()
+
+    # We do not auto-generate missing thumbnails for slide1/slide2 sets, because
+    # those sets are meant to be precomputed from specific deck slides.
+    if style_example_set in {"slide1", "slide2"}:
+        raise RuntimeError(
+            f"Missing cached example for style='{style}' in set='{style_example_set}'. "
+            "Generate the cache first (style-sample-generator)."
+        )
+
+    # Legacy fallback (root cache): preserve old behavior (generate-on-miss).
     client = pptx2nano.create_client()
     prompt = f"""You are an expert presentation designer.
 
@@ -138,6 +166,7 @@ OUTPUT
     img = Image.open(BytesIO(img_bytes))
     out = BytesIO()
     img.save(out, format="PNG")
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_bytes(out.getvalue())
     return cache_path.read_bytes()
 
@@ -230,16 +259,28 @@ def _build_pdf_bytes(slide_numbers: list[int]) -> bytes:
 
 
 def _render_pdf_inline(pdf_bytes: bytes, height: int = 800) -> None:
-    b64 = base64.b64encode(pdf_bytes).decode("utf-8")
-    html = f"""
-<iframe
-  src="data:application/pdf;base64,{b64}"
-  width="100%"
-  height="{height}"
-  style="border: 1px solid #e5e7eb; border-radius: 8px;"
-></iframe>
-"""
-    st.components.v1.html(html, height=height + 20, scrolling=True)
+    # Convert PDF to images for reliable display in Chrome
+    try:
+        from pdf2image import convert_from_bytes
+        import io
+        
+        # Convert PDF to images using pdf2image
+        images = convert_from_bytes(pdf_bytes, dpi=150, size=(800, None))
+        
+        if images:
+            st.info(f"PDF Preview (showing {len(images)} pages):")
+            for i, img in enumerate(images, 1):
+                if i > 10:  # Limit to first 10 pages
+                    st.info(f"... and {len(images) - 10} more pages")
+                    break
+                st.image(img, caption=f"Page {i}", use_container_width=True)
+        else:
+            raise Exception("No pages found")
+            
+    except Exception as e:
+        # Ultimate fallback
+        st.warning("PDF preview not available in this browser. Use the download button below to view the PDF.")
+        st.caption(f"Preview error: {str(e)}")
 
 
 def main() -> None:
@@ -297,6 +338,13 @@ def main() -> None:
 
     with right:
         st.subheader("Style")
+        st.session_state["style_example_set"] = st.selectbox(
+            "Example set",
+            options=["slide1", "slide2"],
+            index=0 if st.session_state.get("style_example_set", "slide1") == "slide1" else 1,
+            help="Switch which cached style thumbnails you want to see.",
+        )
+
         style_choice = st.selectbox("Choose a style", _style_options(), index=0)
         custom_style = ""
         if style_choice == "custom":
@@ -311,7 +359,11 @@ def main() -> None:
         if style:
             try:
                 with st.spinner("Loading style example…"):
-                    example_bytes = _get_or_create_style_example(style, image_model=image_model)
+                    example_bytes = _get_or_create_style_example(
+                        style,
+                        image_model=image_model,
+                        style_example_set=st.session_state.get("style_example_set", "slide1"),
+                    )
                 st.image(example_bytes, caption=f"Example style: {style}")
             except Exception as e:
                 st.warning(f"Could not load style example: {e}")
