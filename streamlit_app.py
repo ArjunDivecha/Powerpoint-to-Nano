@@ -39,6 +39,7 @@ from pathlib import Path
 
 import streamlit as st
 from PIL import Image
+from pptx import Presentation
 
 import pptx2nano
 
@@ -450,6 +451,74 @@ def _process_markdown_input(md_path: Path, output_dir: Path) -> list[Path]:
     return rendered_paths
 
 
+def _extract_text_from_pptx_slide(pptx_path: Path, slide_index: int) -> str:
+    """Extract text directly from a PPTX slide using python-pptx."""
+    try:
+        prs = Presentation(pptx_path)
+        if slide_index >= len(prs.slides):
+            return ""
+        
+        slide = prs.slides[slide_index]
+        text_parts = []
+        
+        for shape in slide.shapes:
+            if hasattr(shape, "text") and shape.text.strip():
+                text_parts.append(shape.text.strip())
+        
+        return "\n".join(text_parts)
+    except Exception as e:
+        st.warning(f"Could not extract text from slide {slide_index + 1}: {e}")
+        return ""
+
+
+def _clean_text_with_gemini(raw_text: str) -> str:
+    """Use gemini-3-flash-preview to clean and structure extracted text."""
+    if not raw_text.strip():
+        return ""
+    
+    try:
+        client = pptx2nano.create_client()
+        response = client.models.generate_content(
+            model="gemini-3-flash-preview",
+            contents=f"""Clean and structure the following slide text. Fix any formatting issues, 
+preserve all content, and maintain the original meaning. Return only the cleaned text:
+
+{raw_text}"""
+        )
+        return response.text.strip()
+    except Exception as e:
+        st.warning(f"Could not clean text with gemini-3-flash-preview: {e}")
+        return raw_text
+
+
+def _should_use_text_extraction(rendered_path: Path, pptx_path: Path | None, slide_index: int) -> bool:
+    """Auto-detect if a slide needs text extraction for better accuracy.
+    
+    Criteria:
+    - Slide has lots of text (detected from PPTX)
+    - Image has small dimensions (likely small fonts)
+    """
+    if not pptx_path or not pptx_path.exists():
+        return False
+    
+    try:
+        # Check 1: Extract text and see if it's text-heavy
+        extracted_text = _extract_text_from_pptx_slide(pptx_path, slide_index)
+        word_count = len(extracted_text.split())
+        
+        # Check 2: Check image dimensions (small images = small fonts)
+        with Image.open(rendered_path) as im:
+            width, height = im.size
+            is_small = width < 1200 or height < 900
+        
+        # Use text extraction if:
+        # - More than 50 words (text-heavy)
+        # - OR small image dimensions (likely small fonts)
+        return word_count > 50 or is_small
+    except Exception:
+        return False
+
+
 def _call_slide_image_model(
     slide_index_1based: int,
     rendered_path: Path,
@@ -457,6 +526,7 @@ def _call_slide_image_model(
     style: str | None,
     total_slides: int,
     previous_interaction_id: str | None,
+    pptx_path: Path | None = None,
 ) -> tuple[bytes, str]:
     client = pptx2nano.create_client()
 
@@ -481,13 +551,50 @@ def _call_slide_image_model(
         except Exception:
             pass
 
-    prompt = pptx2nano.build_image_model_prompt(
-        slide_index_1based=slide_index_1based,
-        total_slides=total_slides,
-        source_width=source_width,
-        source_height=source_height,
-        style=style,
-    )
+    # Auto-detect if text extraction is needed
+    use_text_extraction = _should_use_text_extraction(rendered_path, pptx_path, slide_index_1based - 1)
+    
+    if use_text_extraction and pptx_path:
+        # Extract and clean text with gemini-3-flash-preview
+        raw_text = _extract_text_from_pptx_slide(pptx_path, slide_index_1based - 1)
+        cleaned_text = _clean_text_with_gemini(raw_text)
+        
+        # Build enhanced prompt with extracted text
+        prompt = f"""You are an expert presentation designer.
+
+TASK
+Redesign the provided slide image as a clean, professional infographic slide.
+
+EXTRACTED TEXT CONTENT (use this for accurate text - the image may have small/blurry text):
+{cleaned_text}
+
+CONSTRAINTS (VERY IMPORTANT)
+- Use the EXTRACTED TEXT above for accurate text content
+- Use the IMAGE for layout, visual elements, charts, and spatial relationships
+- Keep the SAME aspect ratio as the input slide
+- Target pixel size: {source_width} x {source_height}
+- Apply the '{style}' visual style
+- Do NOT add speaker notes
+- Do NOT invent new facts
+- Improve layout, spacing, and readability
+
+SLIDE CONTEXT
+- Slide {slide_index_1based} of {total_slides}
+
+OUTPUT
+- Generate exactly ONE image.
+""".strip()
+        
+        st.info(f"🔍 Auto-detected text-heavy slide {slide_index_1based} - using enhanced text extraction for better accuracy")
+    else:
+        # Standard prompt without text extraction
+        prompt = pptx2nano.build_image_model_prompt(
+            slide_index_1based=slide_index_1based,
+            total_slides=total_slides,
+            source_width=source_width,
+            source_height=source_height,
+            style=style,
+        )
 
     image_bytes = rendered_path.read_bytes()
     mime_type = pptx2nano.mimetypes.guess_type(rendered_path.name)[0] or "application/octet-stream"
@@ -784,6 +891,7 @@ def main() -> None:
                             style=style,
                             total_slides=total_slides,
                             previous_interaction_id=prev_id,
+                            pptx_path=input_path if input_type == "pptx" else None,
                         )
                         dt = time.time() - t_slide
                         durations.append(dt)
@@ -820,6 +928,7 @@ def main() -> None:
                             style=style,
                             total_slides=total_slides,
                             previous_interaction_id=prev_id,
+                            pptx_path=input_path if input_type == "pptx" else None,
                         )
                         prog.progress(90)
                         st.session_state["generated_images"][slide_n] = img_bytes
