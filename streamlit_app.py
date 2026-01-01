@@ -667,16 +667,22 @@ def main() -> None:
             help="Switch which cached style thumbnails you want to see.",
         )
 
-        # Get current style index to maintain scroll position
+        # Button grid for style selection (no scrolling needed!)
         style_options = _style_options()
         current_style = st.session_state.get("selected_style", "lego")
-        try:
-            current_index = style_options.index(current_style)
-        except ValueError:
-            current_index = 0
         
-        style_choice = st.selectbox("Choose a style", style_options, index=current_index)
-        st.session_state["selected_style"] = style_choice
+        st.caption("Choose a style:")
+        cols = st.columns(3)
+        
+        for i, style in enumerate(style_options):
+            with cols[i % 3]:
+                # Use buttons instead of radio buttons for better control
+                button_type = "primary" if style == current_style else "secondary"
+                if st.button(style, key=f"style_btn_{i}", type=button_type, use_container_width=True):
+                    st.session_state["selected_style"] = style
+                    st.rerun()
+        
+        style_choice = st.session_state.get("selected_style", "lego")
         
         custom_style = ""
         if style_choice == "custom":
