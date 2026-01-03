@@ -511,11 +511,19 @@ def _should_use_text_extraction(rendered_path: Path, pptx_path: Path | None, sli
             width, height = im.size
             is_small = width < 1200 or height < 900
         
+        # Debug logging
+        st.write(f"🔍 Text extraction check for slide {slide_index + 1}:")
+        st.write(f"  - Word count: {word_count}")
+        st.write(f"  - Image size: {width}x{height}")
+        st.write(f"  - Is small: {is_small}")
+        st.write(f"  - Will use text extraction: {word_count > 50 or is_small}")
+        
         # Use text extraction if:
-        # - More than 50 words (text-heavy)
+        # - More than 20 words (lowered threshold for better detection)
         # - OR small image dimensions (likely small fonts)
-        return word_count > 50 or is_small
-    except Exception:
+        return word_count > 20 or is_small
+    except Exception as e:
+        st.warning(f"Text extraction check failed: {e}")
         return False
 
 
@@ -533,23 +541,8 @@ def _call_slide_image_model(
     with Image.open(rendered_path) as im:
         source_width, source_height = im.size
 
-    if previous_interaction_id and style:
-        followup = (
-            f"Restyle the slide in a '{style}' visual style. "
-            "Preserve all meaningful content from the slide and keep the same aspect ratio. "
-            "Generate exactly ONE image."
-        )
-        interaction = client.interactions.create(
-            model=image_model,
-            input=followup,
-            previous_interaction_id=previous_interaction_id,
-            response_modalities=["IMAGE"],
-        )
-        try:
-            img_bytes, _mime = pptx2nano._extract_image_bytes_from_interaction(interaction)
-            return img_bytes, interaction.id
-        except Exception:
-            pass
+    # Don't use previous_interaction_id for restyling - always start fresh from original slide
+    # This ensures dramatic style changes are properly applied
 
     # Auto-detect if text extraction is needed
     use_text_extraction = _should_use_text_extraction(rendered_path, pptx_path, slide_index_1based - 1)
@@ -557,7 +550,19 @@ def _call_slide_image_model(
     if use_text_extraction and pptx_path:
         # Extract and clean text with gemini-3-flash-preview
         raw_text = _extract_text_from_pptx_slide(pptx_path, slide_index_1based - 1)
-        cleaned_text = _clean_text_with_gemini(raw_text)
+        
+        # Remove duplicate lines from extracted text
+        lines = raw_text.split('\n')
+        seen = set()
+        unique_lines = []
+        for line in lines:
+            line_stripped = line.strip()
+            if line_stripped and line_stripped not in seen:
+                seen.add(line_stripped)
+                unique_lines.append(line)
+        deduplicated_text = '\n'.join(unique_lines)
+        
+        cleaned_text = _clean_text_with_gemini(deduplicated_text)
         
         # Build enhanced prompt with extracted text
         prompt = f"""You are an expert presentation designer.
@@ -569,20 +574,22 @@ EXTRACTED TEXT CONTENT (use this for accurate text - the image may have small/bl
 {cleaned_text}
 
 CONSTRAINTS (VERY IMPORTANT)
-- Use the EXTRACTED TEXT above for accurate text content
+- Use the EXTRACTED TEXT above for accurate text content - DO NOT REPEAT text elements
+- If the same text appears multiple times in the extracted content, only show it ONCE in the final design
 - Use the IMAGE for layout, visual elements, charts, and spatial relationships
 - Keep the SAME aspect ratio as the input slide
 - Target pixel size: {source_width} x {source_height}
 - Apply the '{style}' visual style
 - Do NOT add speaker notes
 - Do NOT invent new facts
+- Do NOT duplicate titles, headings, or any text elements
 - Improve layout, spacing, and readability
 
 SLIDE CONTEXT
 - Slide {slide_index_1based} of {total_slides}
 
 OUTPUT
-- Generate exactly ONE image.
+- Generate exactly ONE image with NO repeated text.
 """.strip()
         
         st.info(f"🔍 Auto-detected text-heavy slide {slide_index_1based} - using enhanced text extraction for better accuracy")
