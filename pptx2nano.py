@@ -2,19 +2,20 @@
 """pptx2nano.py
 
 Purpose
-- Turn a PowerPoint deck (.pptx) into a brand-new "Nano Banana" style deck by:
-  1) Rendering each slide to an image using Keynote (macOS)
-  2) Sending each slide image to Gemini Image (Nano Banana) to generate a redesigned graphic
+- Turn various input formats into redesigned slide decks by:
+  1) Rendering each slide/page to an image
+  2) Sending each image to Gemini Image to generate a redesigned graphic
   3) Combining all generated slide images into a single multi-page PDF
 
 INPUT FILES (prominent)
 - PPTX deck (provided via CLI)
   - Example: /Users/you/path/to/deck.pptx
   - Format: Microsoft PowerPoint .pptx
+- Also supports: PDF, GIF, TXT, DOCX, images, Markdown (via Streamlit UI)
 
 OUTPUT FILES (prominent)
 - Output folder (default: ./pptx2nano_output)
-  - Rendered slide images (from Keynote)
+  - Rendered slide images (from Keynote or conversion)
     - {out_dir}/{deck_stem}/rendered/*.png
   - Generated slide images (from Gemini image model)
     - {out_dir}/{deck_stem}/generated/slide_###.png
@@ -23,18 +24,22 @@ OUTPUT FILES (prominent)
 
 Version History
 - v0.1.0 (2025-12-13): Initial version (PPTX -> Keynote render -> Gemini image per slide -> PDF)
+- v0.2.0 (2026-01-03): Added support for multiple input formats, text extraction, auto-detection
 
 Last Updated
-- 2025-12-13
+- 2026-01-03
 
 Notes (for a 10th grader)
-- Keynote is used because it can "open" PowerPoint files and export each slide as a picture.
-- Then we send each slide picture to Gemini and ask it to redraw the slide as a clean infographic.
+- Keynote is used for PPTX files because it can "open" PowerPoint files and export each slide as a picture.
+- For other formats, we convert them to images first.
+- Then we send each image to Gemini and ask it to redraw the slide as a clean infographic.
 - Finally we put all the new slide pictures into a single PDF.
+- Text-heavy slides get special treatment with extracted text for better accuracy.
 
 Requirements
-- macOS with Keynote installed
+- macOS with Keynote installed (for PPTX files)
 - A Gemini API key in .env (GEMINI_API_KEY=...)
+- Optional: python-pptx, pdf2image, docx, Pillow for other formats
 
 """
 

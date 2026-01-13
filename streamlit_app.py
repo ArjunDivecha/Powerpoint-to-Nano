@@ -5,28 +5,46 @@
 Purpose
 - Local Streamlit web UI for the PowerPoint-to-Nano pipeline.
 - Lets you:
-  - Pick a PPTX using a native macOS file picker
-  - Render slides via Keynote
+  - Pick various input files using native macOS file picker (PPTX, PDF, GIF, TXT, DOCX, images, Markdown)
+  - Render slides/pages via Keynote (PPTX) or conversion (other formats)
   - Generate / regenerate one slide at a time in a chosen style (Interactions API)
+  - Auto-detect text-heavy slides for enhanced text extraction accuracy
   - Preview a PDF in-browser before saving
-  - Save the PDF next to the input PPTX as: <stem>_nano.pdf (overwrite)
+  - Save the PDF next to the input file as: <stem>_nano.pdf (overwrite)
 
 INPUT FILES (prominent)
-- PPTX deck selected via the native file picker
+- Multiple formats supported via native file picker:
+  - PPTX (PowerPoint presentations)
+  - PDF (multi-page documents)
+  - GIF (animated graphics)
+  - TXT (plain text files)
+  - DOCX (Word documents)
+  - Images (PNG, JPG, JPEG, WebP, etc.)
+  - Markdown (.md files)
 
 OUTPUT FILES (prominent)
 - Cached style example images (generated once per style):
-  - {repo}/style_examples_cache/<style>.png
-- Rendered slide images (Keynote exports):
+  - {repo}/style_examples_cache/slide1/<style>.png
+  - {repo}/style_examples_cache/slide2/<style>.png
+- Rendered slide images (Keynote exports or conversions):
   - {repo}/pptx2nano_output_streamlit/{deck_stem}/rendered/*.png
 - Final PDF (written only when you click Save):
-  - {pptx_folder}/{pptx_stem}_nano.pdf
+  - {input_folder}/{input_stem}_nano.pdf
 
 Version History
-- v0.1.0 (2025-12-13): Initial Streamlit UI.
+- v0.1.0 (2025-12-13): Initial Streamlit UI with PPTX support only.
+- v0.2.0 (2026-01-03): Added multi-format support, text extraction, auto-detection, custom styles
 
 Last Updated
-- 2025-12-13
+- 2026-01-03
+
+Features
+- 33+ built-in styles including ghibli-pride
+- Custom style support with on-the-fly generation
+- Text extraction for PPTX files with auto-detection
+- Text deduplication to prevent duplicate titles
+- Fresh regenerations (always from original, not previous generation)
+- Debug logging for text extraction decisions
 """
 
 from __future__ import annotations
@@ -132,13 +150,18 @@ def _get_or_create_style_example(style: str, image_model: str, *, style_example_
     # Backward-compatible fallback: if slide1 set is selected but hasn't been copied yet,
     # fall back to the legacy root cache.
     if style_example_set == "slide1":
-        legacy_path = _style_example_cache_root() / f"{_safe_style_filename(style)}.png"
+        safe = "".join(ch for ch in style.lower() if ch.isalnum() or ch in ("-", "_"))
+        if not safe:
+            safe = "style"
+        legacy_path = _style_example_cache_root() / f"{safe}.png"
         if legacy_path.exists():
             return legacy_path.read_bytes()
 
-    # We do not auto-generate missing thumbnails for slide1/slide2 sets, because
-    # those sets are meant to be precomputed from specific deck slides.
-    if style_example_set in {"slide1", "slide2"}:
+    # We do not auto-generate missing thumbnails for slide1/slide2 sets for BUILTIN styles,
+    # because those sets are meant to be precomputed from specific deck slides.
+    # However, for custom styles, we allow on-the-fly generation.
+    is_builtin_style = style in pptx2nano.BUILTIN_STYLES
+    if style_example_set in {"slide1", "slide2"} and is_builtin_style:
         raise RuntimeError(
             f"Missing cached example for style='{style}' in set='{style_example_set}'. "
             "Generate the cache first (style-sample-generator)."

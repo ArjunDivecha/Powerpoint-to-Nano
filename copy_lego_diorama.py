@@ -1,9 +1,33 @@
 #!/usr/bin/env python3
-"""
-Helper script to copy the LEGO diorama image to style example cache directories.
+"""copy_lego_diorama.py
+
+Purpose
+- Helper script to copy a LEGO diorama image to style example cache directories.
+- Used to prepopulate the style cache with a custom example image.
 
 Usage:
     python copy_lego_diorama.py /path/to/lego-diorama-image.png
+
+INPUT FILES (prominent)
+- LEGO diorama image file
+  - Any image format supported by Pillow (PNG, JPG, etc.)
+  - Example: /Users/you/Desktop/lego-diorama.png
+
+OUTPUT FILES (prominent)
+- Cached style example images:
+  - {repo}/style_examples_cache/slide1/lego-diorama.png
+  - {repo}/style_examples_cache/slide2/lego-diorama.png
+
+Version History
+- v0.1.0 (2025-12-13): Initial version.
+
+Last Updated
+- 2025-12-13
+
+Notes (for a 10th grader)
+- This script copies the same image to two cache directories.
+- The Streamlit app uses these cached images to show style previews instantly.
+- Without caching, the app would need to generate style previews on-demand, which is slower.
 """
 
 import sys

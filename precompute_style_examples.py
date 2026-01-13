@@ -4,16 +4,19 @@
 Purpose
 - One-off helper to precompute and cache "style example" images for every built-in style.
 - These cached images are used by the Streamlit UI so style previews load instantly.
+- Uses a base image provided via command line to generate all style examples.
 
 INPUT FILES (prominent)
 - Base image (your reference image to restyle)
   - Provided via: --base-image
   - Example: /Users/macbook2024/Desktop/Generated Image November 24, 2025 - 12_14AM.jpeg
+  - Any image format supported by Pillow
 
 OUTPUT FILES (prominent)
 - Cached style example images (PNG)
   - Folder: {repo}/style_examples_cache/
   - Files: {style_key}.png (sanitized)
+  - One file per built-in style (33+ files)
 
 Version History
 - v0.1.0 (2025-12-13): Initial version.
@@ -24,7 +27,8 @@ Last Updated
 Notes (for a 10th grader)
 - We take one "base" image and ask Gemini to redraw it in many different art styles.
 - We save each result to disk so the web app can show style thumbnails instantly.
-
+- Without precomputing, the app would generate style examples on-demand, which is slower.
+- This script is useful when you want to use a specific base image for all style examples.
 """
 
 from __future__ import annotations
