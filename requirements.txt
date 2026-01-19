@@ -1,4 +1,6 @@
 google-genai>=1.55.0
 python-dotenv
 Pillow
+pdf2image
+python-pptx
 streamlit
