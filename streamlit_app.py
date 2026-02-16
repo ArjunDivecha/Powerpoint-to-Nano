@@ -45,7 +45,8 @@ Features
 - Text extraction for PPTX files with auto-detection
 - Text deduplication to prevent duplicate titles
 - Fresh regenerations (always from original, not previous generation)
-- Debug logging for text extraction decisions
+- Parallel "Generate ALL" with configurable worker count
+- Faster preview rendering with configurable max pages
 
 Platform Note
 - The "Choose file..." button currently uses AppleScript (`osascript`), which is macOS-specific.
@@ -54,8 +55,12 @@ Platform Note
 from __future__ import annotations
 
 import base64
+import concurrent.futures
+import re
 import subprocess
+import tempfile
 import time
+from html import unescape
 from io import BytesIO
 from pathlib import Path
 
@@ -106,6 +111,12 @@ def _ensure_session_defaults() -> None:
     st.session_state.setdefault("selected_style", "lego")
     st.session_state.setdefault("pptx_conversion_method", "libreoffice")  # Default to LibreOffice
     st.session_state.setdefault("selected_slide", 1)
+    st.session_state.setdefault("pptx_text_cache", {})
+    st.session_state.setdefault("text_extraction_mode", "strict")
+    st.session_state.setdefault("dedupe_extracted_text", False)
+    st.session_state.setdefault("generate_workers", 4)
+    st.session_state.setdefault("preview_max_pages", 10)
+    st.session_state.setdefault("libreoffice_timeout_seconds", 120)
 
 
 def _reset_for_new_input(input_path: Path, input_type: str) -> None:
@@ -115,6 +126,174 @@ def _reset_for_new_input(input_path: Path, input_type: str) -> None:
     st.session_state["generated_images"] = {}
     st.session_state["interaction_ids"] = {}
     st.session_state["last_preview_pdf"] = None
+    st.session_state["pptx_text_cache"] = {}
+
+
+def _pptx_cache_key(pptx_path: Path) -> str:
+    stat = pptx_path.stat()
+    return f"{pptx_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+
+
+def _extract_all_text_from_pptx(pptx_path: Path) -> list[str]:
+    prs = Presentation(pptx_path)
+    texts: list[str] = []
+    for slide in prs.slides:
+        parts: list[str] = []
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                shape_text = shape.text.strip()
+                if shape_text:
+                    parts.append(shape_text)
+        texts.append("\n".join(parts))
+    return texts
+
+
+def _get_pptx_text_cache(pptx_path: Path) -> list[str]:
+    cache = st.session_state.setdefault("pptx_text_cache", {})
+    key = _pptx_cache_key(pptx_path)
+    if cache.get("key") != key:
+        cache = {"key": key, "slides": _extract_all_text_from_pptx(pptx_path)}
+        st.session_state["pptx_text_cache"] = cache
+    return list(cache.get("slides", []))
+
+
+def _dedupe_text_lines(text: str) -> str:
+    seen: set[str] = set()
+    unique_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        unique_lines.append(line)
+    return "\n".join(unique_lines)
+
+
+def _wrap_line_to_width(draw, text: str, font, max_width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        candidate = " ".join(current + [word])
+        bbox = draw.textbbox((0, 0), candidate, font=font)
+        if (bbox[2] - bbox[0]) <= max_width or not current:
+            current.append(word)
+        else:
+            lines.append(" ".join(current))
+            current = [word]
+
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
+
+def _render_text_tokens_to_pages(
+    tokens: list[tuple[str, bool]],
+    output_dir: Path,
+    prefix: str,
+) -> list[Path]:
+    """Render (text, is_header) tokens into one or more 1920x1080 PNG pages."""
+    from PIL import ImageDraw, ImageFont
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    img_width, img_height = 1920, 1080
+    margin = 100
+    max_width = img_width - 2 * margin
+    page_bottom = img_height - margin
+
+    try:
+        body_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
+        header_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 50)
+    except Exception:
+        body_font = ImageFont.load_default()
+        header_font = body_font
+
+    line_step_body = 60
+    line_step_header = 70
+
+    def new_page():
+        page = Image.new("RGB", (img_width, img_height), color="white")
+        return page, ImageDraw.Draw(page), margin
+
+    rendered_paths: list[Path] = []
+    page_num = 1
+    page_img, draw, y_pos = new_page()
+
+    def flush_page(img_obj, path_num: int) -> None:
+        out_path = output_dir / f"{prefix}_{path_num:03d}.png"
+        img_obj.save(out_path, "PNG")
+        rendered_paths.append(out_path)
+
+    has_drawn_any_text = False
+    for text, is_header in tokens:
+        if text == "":
+            y_pos += line_step_body // 2
+            continue
+
+        font = header_font if is_header else body_font
+        step = line_step_header if is_header else line_step_body
+        for wrapped in _wrap_line_to_width(draw, text, font, max_width):
+            if y_pos + step > page_bottom:
+                flush_page(page_img, page_num)
+                page_num += 1
+                page_img, draw, y_pos = new_page()
+            draw.text((margin, y_pos), wrapped, fill="black", font=font)
+            y_pos += step
+            has_drawn_any_text = True
+
+        if is_header:
+            y_pos += 8
+
+    if not has_drawn_any_text:
+        draw.text((margin, margin), "(Empty input)", fill="black", font=body_font)
+    flush_page(page_img, page_num)
+    return rendered_paths
+
+
+def _markdown_to_tokens(md_content: str) -> list[tuple[str, bool]]:
+    """Convert markdown to display tokens with basic structural fidelity."""
+    import markdown
+
+    html = markdown.markdown(md_content, extensions=["extra", "fenced_code", "tables", "nl2br"])
+
+    # Preserve structural boundaries before stripping tags.
+    html = re.sub(r"<h([1-6])>", r"\n__P2N_H\1__", html, flags=re.IGNORECASE)
+    html = re.sub(r"</h[1-6]>", "\n", html, flags=re.IGNORECASE)
+    html = re.sub(r"<li>", "\n__P2N_LI__", html, flags=re.IGNORECASE)
+    html = re.sub(r"</li>", "\n", html, flags=re.IGNORECASE)
+    html = re.sub(r"<br\\s*/?>", "\n", html, flags=re.IGNORECASE)
+    html = re.sub(r"</(p|div|ul|ol|pre|table|tr|blockquote)>", "\n", html, flags=re.IGNORECASE)
+    html = re.sub(r"<[^>]+>", "", html)
+    text = unescape(html)
+
+    tokens: list[tuple[str, bool]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if tokens and tokens[-1][0] != "":
+                tokens.append(("", False))
+            continue
+        if line.startswith("__P2N_H"):
+            line = re.sub(r"^__P2N_H[1-6]__", "", line).strip()
+            if line:
+                tokens.append((line, True))
+            continue
+        if line.startswith("__P2N_LI__"):
+            line = line.replace("__P2N_LI__", "", 1).strip()
+            tokens.append((f"• {line}" if line else "•", False))
+            continue
+        tokens.append((line, False))
+
+    if not tokens:
+        tokens = [("(Empty markdown)", False)]
+    return tokens
 
 
 def _style_options() -> list[str]:
@@ -245,130 +424,36 @@ def _process_gif_input(gif_path: Path, output_dir: Path) -> list[Path]:
 
 
 def _process_text_input(text_path: Path, output_dir: Path) -> list[Path]:
-    """Convert text file to images (one page per paragraph or chunk)."""
-    from PIL import ImageDraw, ImageFont
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Read text file
-    text_content = text_path.read_text(encoding='utf-8')
-    
-    # Split into chunks (by double newline or every ~500 chars)
-    paragraphs = [p.strip() for p in text_content.split('\n\n') if p.strip()]
+    """Convert text file to paginated images without truncating overflow."""
+    text_content = text_path.read_text(encoding="utf-8")
+
+    paragraphs = [p.strip() for p in text_content.split("\n\n") if p.strip()]
     if not paragraphs:
-        # Fallback: split by single newlines
-        paragraphs = [p.strip() for p in text_content.split('\n') if p.strip()]
-    
-    rendered_paths = []
-    
-    # Create images for each paragraph
-    for i, para in enumerate(paragraphs, 1):
-        # Create a white image
-        img_width, img_height = 1920, 1080
-        img = Image.new('RGB', (img_width, img_height), color='white')
-        draw = ImageDraw.Draw(img)
-        
-        # Try to use a system font, fallback to default
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
-        except:
-            font = ImageFont.load_default()
-        
-        # Add text with word wrapping
-        margin = 100
-        max_width = img_width - 2 * margin
-        y_text = margin
-        
-        words = para.split()
-        lines = []
-        current_line = []
-        
-        for word in words:
-            test_line = ' '.join(current_line + [word])
-            bbox = draw.textbbox((0, 0), test_line, font=font)
-            if bbox[2] - bbox[0] <= max_width:
-                current_line.append(word)
-            else:
-                if current_line:
-                    lines.append(' '.join(current_line))
-                current_line = [word]
-        
-        if current_line:
-            lines.append(' '.join(current_line))
-        
-        # Draw lines
-        for line in lines:
-            draw.text((margin, y_text), line, fill='black', font=font)
-            y_text += 60
-        
-        # Save image
-        out_path = output_dir / f"text_{i:03d}.png"
-        img.save(out_path, "PNG")
-        rendered_paths.append(out_path)
-    
-    return rendered_paths
+        paragraphs = [p.strip() for p in text_content.splitlines() if p.strip()]
+    if not paragraphs:
+        paragraphs = ["(Empty text file)"]
+
+    tokens: list[tuple[str, bool]] = []
+    for para in paragraphs:
+        tokens.append((para, False))
+        tokens.append(("", False))
+    return _render_text_tokens_to_pages(tokens, output_dir, prefix="text")
 
 
 def _process_docx_input(docx_path: Path, output_dir: Path) -> list[Path]:
-    """Extract text from DOCX and convert to images."""
+    """Extract text from DOCX and convert to paginated images."""
     from docx import Document
-    from PIL import ImageDraw, ImageFont
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Read DOCX file
+
     doc = Document(docx_path)
-    
-    # Extract paragraphs
     paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    
     if not paragraphs:
-        # Create a single empty page
         paragraphs = ["(Empty document)"]
-    
-    rendered_paths = []
-    
-    # Create images for each paragraph
-    for i, para in enumerate(paragraphs, 1):
-        img_width, img_height = 1920, 1080
-        img = Image.new('RGB', (img_width, img_height), color='white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
-        except:
-            font = ImageFont.load_default()
-        
-        margin = 100
-        max_width = img_width - 2 * margin
-        y_text = margin
-        
-        words = para.split()
-        lines = []
-        current_line = []
-        
-        for word in words:
-            test_line = ' '.join(current_line + [word])
-            bbox = draw.textbbox((0, 0), test_line, font=font)
-            if bbox[2] - bbox[0] <= max_width:
-                current_line.append(word)
-            else:
-                if current_line:
-                    lines.append(' '.join(current_line))
-                current_line = [word]
-        
-        if current_line:
-            lines.append(' '.join(current_line))
-        
-        for line in lines:
-            draw.text((margin, y_text), line, fill='black', font=font)
-            y_text += 60
-        
-        out_path = output_dir / f"docx_{i:03d}.png"
-        img.save(out_path, "PNG")
-        rendered_paths.append(out_path)
-    
-    return rendered_paths
+
+    tokens: list[tuple[str, bool]] = []
+    for para in paragraphs:
+        tokens.append((para, False))
+        tokens.append(("", False))
+    return _render_text_tokens_to_pages(tokens, output_dir, prefix="docx")
 
 
 def _process_image_input(image_path: Path, output_dir: Path) -> list[Path]:
@@ -389,114 +474,20 @@ def _process_image_input(image_path: Path, output_dir: Path) -> list[Path]:
 
 
 def _process_markdown_input(md_path: Path, output_dir: Path) -> list[Path]:
-    """Convert Markdown file to images."""
-    import markdown
-    from PIL import ImageDraw, ImageFont
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Read markdown file
-    md_content = md_path.read_text(encoding='utf-8')
-    
-    # Convert markdown to plain text (strip HTML tags)
-    # For simplicity, we'll just use the raw markdown text
-    # You could use markdown library to convert to HTML then strip tags
-    
-    # Split by headers or double newlines
-    sections = []
-    current_section = []
-    
-    for line in md_content.split('\n'):
-        if line.startswith('#') or (not line.strip() and current_section):
-            if current_section:
-                sections.append('\n'.join(current_section))
-                current_section = []
-            if line.strip():
-                current_section.append(line)
-        else:
-            if line.strip():
-                current_section.append(line)
-    
-    if current_section:
-        sections.append('\n'.join(current_section))
-    
-    if not sections:
-        sections = ["(Empty markdown)"]
-    
-    rendered_paths = []
-    
-    for i, section in enumerate(sections, 1):
-        img_width, img_height = 1920, 1080
-        img = Image.new('RGB', (img_width, img_height), color='white')
-        draw = ImageDraw.Draw(img)
-        
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 40)
-            header_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 50)
-        except:
-            font = ImageFont.load_default()
-            header_font = font
-        
-        margin = 100
-        max_width = img_width - 2 * margin
-        y_text = margin
-        
-        # Process each line
-        for line in section.split('\n'):
-            # Check if it's a header
-            is_header = line.startswith('#')
-            if is_header:
-                line = line.lstrip('#').strip()
-                current_font = header_font
-            else:
-                current_font = font
-            
-            # Word wrap
-            words = line.split()
-            lines = []
-            current_line = []
-            
-            for word in words:
-                test_line = ' '.join(current_line + [word])
-                bbox = draw.textbbox((0, 0), test_line, font=current_font)
-                if bbox[2] - bbox[0] <= max_width:
-                    current_line.append(word)
-                else:
-                    if current_line:
-                        lines.append(' '.join(current_line))
-                    current_line = [word]
-            
-            if current_line:
-                lines.append(' '.join(current_line))
-            
-            for wrapped_line in lines:
-                draw.text((margin, y_text), wrapped_line, fill='black', font=current_font)
-                y_text += 70 if is_header else 60
-        
-        out_path = output_dir / f"md_{i:03d}.png"
-        img.save(out_path, "PNG")
-        rendered_paths.append(out_path)
-    
-    return rendered_paths
+    """Convert Markdown file to paginated images with basic structure preservation."""
+    md_content = md_path.read_text(encoding="utf-8")
+    tokens = _markdown_to_tokens(md_content)
+    return _render_text_tokens_to_pages(tokens, output_dir, prefix="md")
 
 
 def _extract_text_from_pptx_slide(pptx_path: Path, slide_index: int) -> str:
-    """Extract text directly from a PPTX slide using python-pptx."""
+    """Extract text from a PPTX slide using a cached one-pass parse."""
     try:
-        prs = Presentation(pptx_path)
-        if slide_index >= len(prs.slides):
-            return ""
-        
-        slide = prs.slides[slide_index]
-        text_parts = []
-        
-        for shape in slide.shapes:
-            if hasattr(shape, "text") and shape.text.strip():
-                text_parts.append(shape.text.strip())
-        
-        return "\n".join(text_parts)
-    except Exception as e:
-        st.warning(f"Could not extract text from slide {slide_index + 1}: {e}")
+        slide_texts = _get_pptx_text_cache(pptx_path)
+        if 0 <= slide_index < len(slide_texts):
+            return slide_texts[slide_index]
+        return ""
+    except Exception:
         return ""
 
 
@@ -515,12 +506,16 @@ preserve all content, and maintain the original meaning. Return only the cleaned
 {raw_text}"""
         )
         return response.text.strip()
-    except Exception as e:
-        st.warning(f"Could not clean text with gemini-3-flash-preview: {e}")
+    except Exception:
         return raw_text
 
 
-def _should_use_text_extraction(rendered_path: Path, pptx_path: Path | None, slide_index: int) -> bool:
+def _should_use_text_extraction(
+    rendered_path: Path,
+    pptx_path: Path | None,
+    slide_index: int,
+    extracted_text: str | None = None,
+) -> bool:
     """Auto-detect if a slide needs text extraction for better accuracy.
     
     Criteria:
@@ -532,27 +527,21 @@ def _should_use_text_extraction(rendered_path: Path, pptx_path: Path | None, sli
     
     try:
         # Check 1: Extract text and see if it's text-heavy
-        extracted_text = _extract_text_from_pptx_slide(pptx_path, slide_index)
-        word_count = len(extracted_text.split())
+        text_for_count = extracted_text
+        if text_for_count is None:
+            text_for_count = _extract_text_from_pptx_slide(pptx_path, slide_index)
+        word_count = len(text_for_count.split())
         
         # Check 2: Check image dimensions (small images = small fonts)
         with Image.open(rendered_path) as im:
             width, height = im.size
             is_small = width < 1200 or height < 900
         
-        # Debug logging
-        st.write(f"🔍 Text extraction check for slide {slide_index + 1}:")
-        st.write(f"  - Word count: {word_count}")
-        st.write(f"  - Image size: {width}x{height}")
-        st.write(f"  - Is small: {is_small}")
-        st.write(f"  - Will use text extraction: {word_count > 50 or is_small}")
-        
         # Use text extraction if:
         # - More than 20 words (lowered threshold for better detection)
         # - OR small image dimensions (likely small fonts)
         return word_count > 20 or is_small
-    except Exception as e:
-        st.warning(f"Text extraction check failed: {e}")
+    except Exception:
         return False
 
 
@@ -564,6 +553,9 @@ def _call_slide_image_model(
     total_slides: int,
     previous_interaction_id: str | None,
     pptx_path: Path | None = None,
+    text_extraction_mode: str = "strict",
+    dedupe_extracted_text: bool = False,
+    extracted_slide_text: str | None = None,
 ) -> tuple[bytes, str]:
     client = pptx2nano.create_client()
 
@@ -573,64 +565,78 @@ def _call_slide_image_model(
     # Don't use previous_interaction_id for restyling - always start fresh from original slide
     # This ensures dramatic style changes are properly applied
 
-    # Auto-detect if text extraction is needed
-    use_text_extraction = _should_use_text_extraction(rendered_path, pptx_path, slide_index_1based - 1)
+    # Auto-detect if text extraction is needed (unless explicitly disabled).
+    use_text_extraction = False
+    if text_extraction_mode != "off":
+        use_text_extraction = _should_use_text_extraction(
+            rendered_path,
+            pptx_path,
+            slide_index_1based - 1,
+            extracted_text=extracted_slide_text,
+        )
     
+    base_prompt = pptx2nano.build_image_model_prompt(
+        slide_index_1based=slide_index_1based,
+        total_slides=total_slides,
+        source_width=source_width,
+        source_height=source_height,
+        style=style,
+    )
+
+    prompt = base_prompt
     if use_text_extraction and pptx_path:
-        # Extract and clean text with gemini-3-flash-preview
-        raw_text = _extract_text_from_pptx_slide(pptx_path, slide_index_1based - 1)
-        
-        # Remove duplicate lines from extracted text
-        lines = raw_text.split('\n')
-        seen = set()
-        unique_lines = []
-        for line in lines:
-            line_stripped = line.strip()
-            if line_stripped and line_stripped not in seen:
-                seen.add(line_stripped)
-                unique_lines.append(line)
-        deduplicated_text = '\n'.join(unique_lines)
-        
-        cleaned_text = _clean_text_with_gemini(deduplicated_text)
-        
-        # Build enhanced prompt with extracted text
-        prompt = f"""You are an expert presentation designer.
+        raw_text = extracted_slide_text
+        if raw_text is None:
+            raw_text = _extract_text_from_pptx_slide(pptx_path, slide_index_1based - 1)
+
+        prepared_text = raw_text
+        if text_extraction_mode == "assisted":
+            prepared_text = _clean_text_with_gemini(prepared_text)
+        if dedupe_extracted_text:
+            prepared_text = _dedupe_text_lines(prepared_text)
+
+        if prepared_text.strip():
+            style_label = style if style else "clean professional"
+            constraints = [
+                "- Use the EXTRACTED TEXT above for accurate text content.",
+                "- Use the IMAGE for layout, visual elements, charts, and spatial relationships.",
+                "- Keep the SAME aspect ratio as the input slide.",
+                f"- Target pixel size: {source_width} x {source_height}.",
+                f"- Apply the '{style_label}' visual style.",
+                "- Do NOT add speaker notes.",
+                "- Do NOT invent new facts.",
+                "- Do NOT duplicate titles, headings, or text unless duplicates are clearly intentional.",
+                "- Improve layout, spacing, and readability.",
+            ]
+            if text_extraction_mode == "strict":
+                constraints.insert(
+                    1,
+                    "- Treat extracted text as authoritative; preserve wording, numbers, and labels exactly.",
+                )
+            if dedupe_extracted_text:
+                constraints.insert(
+                    1,
+                    "- If the same text appears multiple times in the extracted content, only show it once.",
+                )
+
+            # Build enhanced prompt with extracted text
+            prompt = f"""You are an expert presentation designer.
 
 TASK
 Redesign the provided slide image as a clean, professional infographic slide.
 
 EXTRACTED TEXT CONTENT (use this for accurate text - the image may have small/blurry text):
-{cleaned_text}
+{prepared_text}
 
 CONSTRAINTS (VERY IMPORTANT)
-- Use the EXTRACTED TEXT above for accurate text content - DO NOT REPEAT text elements
-- If the same text appears multiple times in the extracted content, only show it ONCE in the final design
-- Use the IMAGE for layout, visual elements, charts, and spatial relationships
-- Keep the SAME aspect ratio as the input slide
-- Target pixel size: {source_width} x {source_height}
-- Apply the '{style}' visual style
-- Do NOT add speaker notes
-- Do NOT invent new facts
-- Do NOT duplicate titles, headings, or any text elements
-- Improve layout, spacing, and readability
+{chr(10).join(constraints)}
 
 SLIDE CONTEXT
 - Slide {slide_index_1based} of {total_slides}
 
 OUTPUT
-- Generate exactly ONE image with NO repeated text.
+- Generate exactly ONE image.
 """.strip()
-        
-        st.info(f"🔍 Auto-detected text-heavy slide {slide_index_1based} - using enhanced text extraction for better accuracy")
-    else:
-        # Standard prompt without text extraction
-        prompt = pptx2nano.build_image_model_prompt(
-            slide_index_1based=slide_index_1based,
-            total_slides=total_slides,
-            source_width=source_width,
-            source_height=source_height,
-            style=style,
-        )
 
     image_bytes = rendered_path.read_bytes()
     mime_type = pptx2nano.mimetypes.guess_type(rendered_path.name)[0] or "application/octet-stream"
@@ -653,48 +659,57 @@ OUTPUT
 
 
 def _build_pdf_bytes(slide_numbers: list[int]) -> bytes:
-    images: list[Image.Image] = []
+    image_bytes_list: list[bytes] = []
     for n in slide_numbers:
         img_bytes = st.session_state["generated_images"].get(n)
-        if not img_bytes:
-            continue
-        im = Image.open(BytesIO(img_bytes))
-        if im.mode != "RGB":
-            im = im.convert("RGB")
-        images.append(im)
+        if img_bytes:
+            image_bytes_list.append(img_bytes)
 
-    if not images:
+    if not image_bytes_list:
         raise RuntimeError("No generated slides available to build a PDF.")
 
-    first, rest = images[0], images[1:]
-    buf = BytesIO()
-    first.save(buf, format="PDF", save_all=True, append_images=rest)
-    pdf_bytes = buf.getvalue()
+    with tempfile.TemporaryDirectory(prefix="p2n_preview_pdf_") as td:
+        tmp_dir = Path(td)
+        image_paths: list[Path] = []
+        for i, img_bytes in enumerate(image_bytes_list, start=1):
+            image_path = tmp_dir / f"preview_{i:03d}.png"
+            image_path.write_bytes(img_bytes)
+            image_paths.append(image_path)
 
-    for im in images:
-        try:
-            im.close()
-        except Exception:
-            pass
-
-    return pdf_bytes
+        out_pdf = tmp_dir / "preview.pdf"
+        pptx2nano.images_to_pdf(image_paths, out_pdf)
+        return out_pdf.read_bytes()
 
 
-def _render_pdf_inline(pdf_bytes: bytes, height: int = 800) -> None:
+def _render_pdf_inline(pdf_bytes: bytes, height: int = 800, max_pages: int = 10) -> None:
     # Convert PDF to images for reliable display in Chrome
     try:
-        from pdf2image import convert_from_bytes
-        import io
-        
-        # Convert PDF to images using pdf2image
-        images = convert_from_bytes(pdf_bytes, dpi=150, size=(800, None))
-        
+        from pdf2image import convert_from_bytes, pdfinfo_from_bytes
+
+        page_cap = max(1, int(max_pages))
+        total_pages = 0
+        try:
+            info = pdfinfo_from_bytes(pdf_bytes)
+            total_pages = int(info.get("Pages", 0))
+        except Exception:
+            total_pages = 0
+
+        last_page = page_cap if total_pages <= 0 else min(total_pages, page_cap)
+        images = convert_from_bytes(
+            pdf_bytes,
+            dpi=150,
+            size=(800, None),
+            first_page=1,
+            last_page=last_page,
+        )
+
         if images:
-            st.info(f"PDF Preview (showing {len(images)} pages):")
+            shown = len(images)
+            if total_pages > 0:
+                st.info(f"PDF Preview (showing {shown} of {total_pages} pages):")
+            else:
+                st.info(f"PDF Preview (showing {shown} pages):")
             for i, img in enumerate(images, 1):
-                if i > 10:  # Limit to first 10 pages
-                    st.info(f"... and {len(images) - 10} more pages")
-                    break
                 st.image(img, caption=f"Page {i}", use_container_width=True)
         else:
             raise Exception("No pages found")
@@ -754,6 +769,17 @@ def main() -> None:
         # PPTX conversion info (LibreOffice is now the only method)
         if input_type == "pptx":
             st.caption("📄 Using LibreOffice for PPTX conversion")
+            libreoffice_timeout_seconds = int(
+                st.number_input(
+                    "LibreOffice timeout (seconds)",
+                    min_value=30,
+                    max_value=1800,
+                    value=int(st.session_state.get("libreoffice_timeout_seconds", 120)),
+                    step=30,
+                    help="Increase this for large/complex decks that may exceed default conversion time.",
+                )
+            )
+            st.session_state["libreoffice_timeout_seconds"] = libreoffice_timeout_seconds
 
         st.subheader("2) Process Input")
         # Render slides label
@@ -776,7 +802,12 @@ def main() -> None:
                 
                 if input_type == "pptx":
                     with st.spinner("Rendering slides using LibreOffice…"):
-                        rendered_paths = export_slides(Path(input_path), rendered_dir, method="libreoffice")
+                        rendered_paths = export_slides(
+                            Path(input_path),
+                            rendered_dir,
+                            method="libreoffice",
+                            timeout_seconds=int(st.session_state.get("libreoffice_timeout_seconds", 120)),
+                        )
                 elif input_type == "pdf":
                     with st.spinner("Extracting PDF pages…"):
                         rendered_paths = _process_pdf_input(Path(input_path), rendered_dir)
@@ -800,6 +831,9 @@ def main() -> None:
                     return
                 
                 st.session_state["rendered_paths"] = rendered_paths
+                if input_type == "pptx":
+                    # Warm the text cache once so downstream generation avoids repeated parsing.
+                    _get_pptx_text_cache(Path(input_path))
                 st.success(f"Processed {len(rendered_paths)} pages/slides/frames.")
             except Exception as e:
                 st.error(str(e))
@@ -893,6 +927,40 @@ def main() -> None:
             help="When unchecked, Generate ALL will skip slides that already have a generated image so you can keep different styles per slide.",
         )
 
+        generate_workers = int(
+            st.number_input(
+                "Generate ALL workers",
+                min_value=1,
+                max_value=16,
+                value=int(st.session_state.get("generate_workers", 4)),
+                step=1,
+                help="Parallel workers for Generate ALL. Higher can be faster but may hit API limits.",
+            )
+        )
+        st.session_state["generate_workers"] = generate_workers
+
+        text_extraction_mode = st.session_state.get("text_extraction_mode", "strict")
+        dedupe_extracted_text = bool(st.session_state.get("dedupe_extracted_text", False))
+        if input_type == "pptx":
+            text_extraction_mode = st.selectbox(
+                "Text extraction mode (PPTX)",
+                options=["off", "strict", "assisted"],
+                index=["off", "strict", "assisted"].index(
+                    st.session_state.get("text_extraction_mode", "strict")
+                ),
+                help=(
+                    "off: image-only. strict: use extracted text as-is for higher fidelity. "
+                    "assisted: use Gemini cleanup for potentially better readability."
+                ),
+            )
+            st.session_state["text_extraction_mode"] = text_extraction_mode
+            dedupe_extracted_text = st.checkbox(
+                "Deduplicate extracted text lines",
+                value=bool(st.session_state.get("dedupe_extracted_text", False)),
+                help="Turn on only if your source slides commonly duplicate identical lines unintentionally.",
+            )
+            st.session_state["dedupe_extracted_text"] = dedupe_extracted_text
+
     # When ALL is selected, we don't show a single rendered_path preview.
     slide_n = None if gen_target == "ALL" else int(gen_target)
     rendered_path = None if slide_n is None else rendered_paths[slide_n - 1]
@@ -904,6 +972,14 @@ def main() -> None:
             st.image(str(rendered_path), caption=f"Original slide {slide_n}")
 
     with c3:
+        pptx_input_path = Path(input_path) if input_type == "pptx" else None
+        pptx_slide_texts: list[str] = []
+        if pptx_input_path and text_extraction_mode != "off":
+            try:
+                pptx_slide_texts = _get_pptx_text_cache(pptx_input_path)
+            except Exception:
+                pptx_slide_texts = []
+
         if slide_n is None:
             if st.button("Generate ALL slides (skip existing unless overwrite checked)", use_container_width=True):
                 try:
@@ -914,6 +990,8 @@ def main() -> None:
 
                     total = len(slide_numbers)
                     done = 0
+                    to_generate: list[int] = []
+
                     for n in slide_numbers:
                         already = n in st.session_state["generated_images"]
                         if already and not overwrite_existing:
@@ -921,46 +999,89 @@ def main() -> None:
                             prog.progress(int((done / total) * 100))
                             status.caption(f"Skipped existing slide {n} ({done}/{total})")
                             continue
+                        to_generate.append(n)
 
-                        rp = rendered_paths[n - 1]
-                        prev_id = st.session_state["interaction_ids"].get(n)
+                    if not to_generate:
+                        status.success("Nothing to generate. All slides already existed and overwrite was off.")
+                    else:
+                        start_times: dict[int, float] = {}
+                        errors: list[tuple[int, str]] = []
 
-                        status.caption(f"Generating slide {n} ({done + 1}/{total})")
-                        t_slide = time.time()
-                        img_bytes, new_id = _call_slide_image_model(
-                            slide_index_1based=n,
-                            rendered_path=rp,
-                            image_model=image_model,
-                            style=style,
-                            total_slides=total_slides,
-                            previous_interaction_id=prev_id,
-                            pptx_path=input_path if input_type == "pptx" else None,
-                        )
-                        dt = time.time() - t_slide
-                        durations.append(dt)
+                        with concurrent.futures.ThreadPoolExecutor(
+                            max_workers=max(1, min(generate_workers, len(to_generate)))
+                        ) as ex:
+                            future_to_slide = {}
+                            for n in to_generate:
+                                rp = rendered_paths[n - 1]
+                                prev_id = st.session_state["interaction_ids"].get(n)
+                                extracted_text = None
+                                if pptx_slide_texts and (n - 1) < len(pptx_slide_texts):
+                                    extracted_text = pptx_slide_texts[n - 1]
+                                start_times[n] = time.time()
+                                future = ex.submit(
+                                    _call_slide_image_model,
+                                    slide_index_1based=n,
+                                    rendered_path=rp,
+                                    image_model=image_model,
+                                    style=style,
+                                    total_slides=total_slides,
+                                    previous_interaction_id=prev_id,
+                                    pptx_path=pptx_input_path,
+                                    text_extraction_mode=text_extraction_mode,
+                                    dedupe_extracted_text=dedupe_extracted_text,
+                                    extracted_slide_text=extracted_text,
+                                )
+                                future_to_slide[future] = n
 
-                        st.session_state["generated_images"][n] = img_bytes
-                        st.session_state["interaction_ids"][n] = new_id
-                        st.session_state["last_preview_pdf"] = None
+                            for fut in concurrent.futures.as_completed(future_to_slide):
+                                n = future_to_slide[fut]
+                                try:
+                                    img_bytes, new_id = fut.result()
+                                except Exception as e:
+                                    errors.append((n, str(e)))
+                                else:
+                                    st.session_state["generated_images"][n] = img_bytes
+                                    st.session_state["interaction_ids"][n] = new_id
+                                    st.session_state["last_preview_pdf"] = None
+                                    dt = time.time() - start_times.get(n, time.time())
+                                    durations.append(dt)
 
-                        done += 1
-                        avg = sum(durations) / len(durations) if durations else 0.0
-                        remaining = max(0, total - done)
-                        eta = remaining * avg
-                        prog.progress(int((done / total) * 100))
-                        status.caption(
-                            f"Generated slide {n} ({done}/{total}) | last={dt:.1f}s avg={avg:.1f}s ETA={eta:.0f}s"
-                        )
+                                done += 1
+                                avg = sum(durations) / len(durations) if durations else 0.0
+                                remaining = max(0, total - done)
+                                eta = remaining * avg
+                                prog.progress(int((done / total) * 100))
+                                if errors:
+                                    status.caption(
+                                        f"Processed slide {n} ({done}/{total}) | errors={len(errors)} "
+                                        f"avg={avg:.1f}s ETA={eta:.0f}s"
+                                    )
+                                else:
+                                    last = durations[-1] if durations else 0.0
+                                    status.caption(
+                                        f"Generated slide {n} ({done}/{total}) | "
+                                        f"last={last:.1f}s avg={avg:.1f}s ETA={eta:.0f}s"
+                                    )
 
                     prog.progress(100)
                     total_time = time.time() - t0
-                    status.success(f"Done. Generate ALL finished in {total_time:.1f}s")
+                    if "errors" in locals() and errors:
+                        first_slide, first_error = errors[0]
+                        status.error(
+                            f"Generate ALL finished in {total_time:.1f}s with {len(errors)} errors. "
+                            f"First failure: slide {first_slide} -> {first_error}"
+                        )
+                    else:
+                        status.success(f"Done. Generate ALL finished in {total_time:.1f}s")
                 except Exception as e:
                     st.error(str(e))
         else:
             prev_id = st.session_state["interaction_ids"].get(slide_n)
             if st.button("Generate / Regenerate this slide", use_container_width=True):
                 try:
+                    extracted_text = None
+                    if pptx_slide_texts and (slide_n - 1) < len(pptx_slide_texts):
+                        extracted_text = pptx_slide_texts[slide_n - 1]
                     prog = st.progress(0)
                     with st.spinner("Calling Gemini…"):
                         prog.progress(20)
@@ -971,7 +1092,10 @@ def main() -> None:
                             style=style,
                             total_slides=total_slides,
                             previous_interaction_id=prev_id,
-                            pptx_path=input_path if input_type == "pptx" else None,
+                            pptx_path=pptx_input_path,
+                            text_extraction_mode=text_extraction_mode,
+                            dedupe_extracted_text=dedupe_extracted_text,
+                            extracted_slide_text=extracted_text,
                         )
                         prog.progress(90)
                         st.session_state["generated_images"][slide_n] = img_bytes
@@ -991,6 +1115,18 @@ def main() -> None:
     st.divider()
 
     st.subheader("4) Preview and Save PDF")
+
+    preview_max_pages = int(
+        st.number_input(
+            "Preview max pages",
+            min_value=1,
+            max_value=100,
+            value=int(st.session_state.get("preview_max_pages", 10)),
+            step=1,
+            help="Only the first N pages are rendered for preview speed.",
+        )
+    )
+    st.session_state["preview_max_pages"] = preview_max_pages
 
     preview_mode = st.selectbox(
         "Include slides",
@@ -1034,7 +1170,7 @@ def main() -> None:
 
     preview_bytes = st.session_state.get("last_preview_pdf")
     if preview_bytes:
-        _render_pdf_inline(preview_bytes)
+        _render_pdf_inline(preview_bytes, max_pages=preview_max_pages)
         st.download_button(
             label="Download preview PDF",
             data=preview_bytes,

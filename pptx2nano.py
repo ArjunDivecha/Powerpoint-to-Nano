@@ -56,6 +56,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from io import BytesIO
@@ -530,21 +531,42 @@ def images_to_pdf(image_paths: list[Path], pdf_path: Path):
 
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Memory-lean path: build one-page PDFs and merge them.
+    # Falls back to legacy PIL append mode if pypdf is unavailable.
+    with tempfile.TemporaryDirectory(prefix="p2n_pdf_pages_") as td:
+        tmp_dir = Path(td)
+        page_pdf_paths: list[Path] = []
+
+        for idx, image_path in enumerate(image_paths, start=1):
+            with Image.open(image_path) as src:
+                page_image = src.convert("RGB") if src.mode != "RGB" else src.copy()
+            page_pdf = tmp_dir / f"page_{idx:04d}.pdf"
+            page_image.save(page_pdf, format="PDF")
+            page_image.close()
+            page_pdf_paths.append(page_pdf)
+
+        try:
+            from pypdf import PdfWriter
+
+            writer = PdfWriter()
+            for page_pdf in page_pdf_paths:
+                writer.append(str(page_pdf))
+            with open(pdf_path, "wb") as fh:
+                writer.write(fh)
+            return
+        except Exception:
+            pass
+
     pil_images = []
     for p in image_paths:
-        im = Image.open(p)
-        if im.mode != "RGB":
-            im = im.convert("RGB")
-        pil_images.append(im)
+        with Image.open(p) as src:
+            pil_images.append(src.convert("RGB") if src.mode != "RGB" else src.copy())
 
     first, rest = pil_images[0], pil_images[1:]
     first.save(str(pdf_path), save_all=True, append_images=rest)
 
     for im in pil_images:
-        try:
-            im.close()
-        except Exception:
-            pass
+        im.close()
 
 
 def main():
@@ -576,6 +598,12 @@ def main():
         choices=["libreoffice", "keynote", "auto"],
         default="libreoffice",
         help="PPTX rendering method (default: libreoffice).",
+    )
+    parser.add_argument(
+        "--libreoffice-timeout-seconds",
+        type=int,
+        default=None,
+        help="LibreOffice conversion timeout in seconds (default: 120 or env override).",
     )
     parser.add_argument(
         "--list-styles",
@@ -632,7 +660,15 @@ def main():
 
     # 1) Render slides using selected method
     print(f"[INFO] Rendering slides with {args.pptx_method}: {pptx_path}")
-    rendered_paths = export_pptx_slides(pptx_path, rendered_dir, method=args.pptx_method)
+    if args.pptx_method in {"libreoffice", "auto"}:
+        rendered_paths = export_pptx_slides(
+            pptx_path,
+            rendered_dir,
+            method=args.pptx_method,
+            timeout_seconds=args.libreoffice_timeout_seconds,
+        )
+    else:
+        rendered_paths = export_pptx_slides(pptx_path, rendered_dir, method=args.pptx_method)
     full_total = len(rendered_paths)
 
     if args.max_slides is not None:
@@ -740,6 +776,7 @@ def main():
             "style": args.style,
             "workers": args.workers,
             "pptx_method": args.pptx_method,
+            "libreoffice_timeout_seconds": args.libreoffice_timeout_seconds,
             "max_slides": args.max_slides,
             "slides_selected": selected_slides,
             "slides": results_sorted,

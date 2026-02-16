@@ -5,4 +5,5 @@ pdf2image
 python-pptx
 python-docx
 markdown
+pypdf
 streamlit

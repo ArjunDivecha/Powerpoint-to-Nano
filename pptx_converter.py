@@ -21,6 +21,7 @@ import re
 import subprocess
 import tempfile
 import shutil
+import os
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -67,6 +68,30 @@ def _find_libreoffice() -> str | None:
         if Path(path).exists():
             return path
     return None
+
+
+def _resolve_libreoffice_timeout_seconds(timeout_seconds: int | None = None) -> int:
+    """Resolve LibreOffice timeout with optional env override fallback.
+
+    Priority:
+    1) explicit function argument (if valid)
+    2) PPTX_LIBREOFFICE_TIMEOUT_SECONDS env var (if valid)
+    3) default: 120 seconds
+    """
+    if timeout_seconds is not None:
+        if timeout_seconds < 1:
+            raise ValueError("timeout_seconds must be >= 1")
+        return int(timeout_seconds)
+
+    raw = (os.getenv("PPTX_LIBREOFFICE_TIMEOUT_SECONDS") or "").strip()
+    if raw:
+        try:
+            env_timeout = int(raw)
+            if env_timeout >= 1:
+                return env_timeout
+        except ValueError:
+            pass
+    return 120
 
 
 def export_slides_with_keynote(pptx_path: Path, rendered_dir: Path) -> list[Path]:
@@ -169,18 +194,26 @@ end run
     return _sort_slide_files(pngs)
 
 
-def export_slides_with_libreoffice(pptx_path: Path, rendered_dir: Path, dpi: int = 150) -> list[Path]:
+def export_slides_with_libreoffice(
+    pptx_path: Path,
+    rendered_dir: Path,
+    dpi: int = 150,
+    timeout_seconds: int | None = None,
+) -> list[Path]:
     """Render PPTX slides into PNG images using LibreOffice.
     
     Args:
         pptx_path: Path to the PPTX file
         rendered_dir: Directory to save rendered images
         dpi: Resolution for export (default 150, higher = better quality but slower)
+        timeout_seconds: Conversion timeout in seconds (default: 120, overridable via
+            PPTX_LIBREOFFICE_TIMEOUT_SECONDS env var)
     
     Returns:
         List of PNG paths in slide order
     """
     _prepare_rendered_dir(rendered_dir)
+    effective_timeout = _resolve_libreoffice_timeout_seconds(timeout_seconds)
     
     libreoffice = _find_libreoffice()
     if not libreoffice:
@@ -210,7 +243,7 @@ def export_slides_with_libreoffice(pptx_path: Path, rendered_dir: Path, dpi: int
                 ],
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 minute timeout
+                timeout=effective_timeout,
             )
             
             if result.returncode != 0:
@@ -233,7 +266,9 @@ def export_slides_with_libreoffice(pptx_path: Path, rendered_dir: Path, dpi: int
                 _convert_pdf_to_png_pdf2image(pdf_file, rendered_dir, dpi)
                 
         except subprocess.TimeoutExpired:
-            raise RuntimeError("LibreOffice conversion timed out (took > 2 minutes)")
+            raise RuntimeError(
+                f"LibreOffice conversion timed out (took > {effective_timeout} seconds)"
+            )
     
     # Collect and sort the output files
     pngs = list(rendered_dir.glob("*.png"))
@@ -292,7 +327,8 @@ def export_slides(
     pptx_path: Path | str,
     rendered_dir: Path | str,
     method: Literal["auto", "keynote", "libreoffice"] = "auto",
-    dpi: int = 150
+    dpi: int = 150,
+    timeout_seconds: int | None = None,
 ) -> list[Path]:
     """Export PPTX slides to PNG images using specified method.
     
@@ -301,6 +337,7 @@ def export_slides(
         rendered_dir: Directory to save rendered images
         method: Conversion method - "keynote", "libreoffice", or "auto"
         dpi: DPI for LibreOffice method (default 150)
+        timeout_seconds: Timeout for LibreOffice conversion
     
     Returns:
         List of PNG file paths in slide order
@@ -319,14 +356,18 @@ def export_slides(
                 return export_slides_with_keynote(pptx_path, rendered_dir)
             except RuntimeError:
                 # Fall back to LibreOffice
-                return export_slides_with_libreoffice(pptx_path, rendered_dir, dpi)
+                return export_slides_with_libreoffice(
+                    pptx_path, rendered_dir, dpi, timeout_seconds=timeout_seconds
+                )
         else:
             method = "libreoffice"
     
     if method == "keynote":
         return export_slides_with_keynote(pptx_path, rendered_dir)
     elif method == "libreoffice":
-        return export_slides_with_libreoffice(pptx_path, rendered_dir, dpi)
+        return export_slides_with_libreoffice(
+            pptx_path, rendered_dir, dpi, timeout_seconds=timeout_seconds
+        )
     else:
         raise ValueError(f"Unknown method: {method}")
 

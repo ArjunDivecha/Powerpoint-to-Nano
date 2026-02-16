@@ -6,7 +6,7 @@ This file captures the actual setup risks and checks for a new user cloning this
 - README is aligned with current renderer behavior.
 - CLI default renderer is LibreOffice.
 - Streamlit PPTX conversion uses LibreOffice.
-- Python dependency list includes `python-docx` and `markdown`.
+- Python dependency list includes `python-docx`, `markdown`, and `pypdf`.
 - Stale slide-output issues were fixed by cleaning render folders before export.
 
 ## Critical Setup Blockers
@@ -40,6 +40,9 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # add GEMINI_API_KEY to .env
+
+# optional: raise default LibreOffice timeout for large decks
+export PPTX_LIBREOFFICE_TIMEOUT_SECONDS=300
 ```
 
 ## Verification Checklist
@@ -47,7 +50,7 @@ cp .env.example .env
 ```bash
 # 1) Python deps load
 source .venv/bin/activate
-python -c "import google.genai, docx, markdown, streamlit; print('ok')"
+python -c "import google.genai, docx, markdown, pypdf, streamlit; print('ok')"
 
 # 2) LibreOffice exists
 which soffice || which libreoffice
@@ -73,6 +76,7 @@ pytest -q
 
 ### 1. First conversion can feel slow
 LibreOffice startup cost can make first run noticeably slower.
+For large decks, increase timeout via `--libreoffice-timeout-seconds` or `PPTX_LIBREOFFICE_TIMEOUT_SECONDS`.
 
 ### 2. Keynote mode is macOS-only
 `--pptx-method keynote` and `--pptx-method auto` Keynote fallback are only applicable on macOS.

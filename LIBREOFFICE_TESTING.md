@@ -45,6 +45,16 @@ Expected output includes:
 - `[INFO] Rendering slides with libreoffice: ...`
 - `[DONE] Created: ...pdf`
 
+### Timeout tuning for large decks
+
+```bash
+# One-off timeout override (seconds)
+python pptx2nano.py /path/to/deck.pptx --libreoffice-timeout-seconds 300
+
+# Global fallback for converter helpers
+export PPTX_LIBREOFFICE_TIMEOUT_SECONDS=300
+```
+
 ## 4. Renderer Comparison (Keynote vs LibreOffice)
 
 Use the comparison helper:
@@ -87,6 +97,13 @@ streamlit run streamlit_app.py
 
 For PPTX inputs, Streamlit currently uses LibreOffice conversion.
 The built-in "Choose file..." button currently uses `osascript`, so that file-picker flow is macOS-specific.
+
+Useful Streamlit controls for speed/accuracy:
+- `LibreOffice timeout (seconds)` for PPTX conversion.
+- `Generate ALL workers` for parallel generation.
+- `Text extraction mode (PPTX)`: `off`, `strict`, `assisted`.
+- `Deduplicate extracted text lines` toggle.
+- `Preview max pages` to cap in-browser PDF preview rendering.
 
 ## 7. Optional Integration Test (pytest)
 
