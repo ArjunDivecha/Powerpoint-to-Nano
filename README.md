@@ -14,7 +14,24 @@ Convert a PowerPoint deck (`.pptx`) into a brand-new set of "Nano Banana" style 
 - Gemini API key
 - google-genai SDK version that supports Interactions API (see `requirements.txt`)
 
-## Setup
+## Friend Quick Start (minimal steps)
+
+```bash
+git clone https://github.com/ArjunDivecha/Powerpoint-to-Nano.git
+cd Powerpoint-to-Nano
+cp .env.example .env
+# edit .env and set GEMINI_API_KEY
+./run_streamlit.sh
+```
+
+What `./run_streamlit.sh` does automatically:
+- Runs `./setup.sh`
+- Ensures Python 3.10+
+- Installs LibreOffice (and Poppler optionally) when supported package managers are available
+- Creates `.venv` and installs Python dependencies
+- Launches Streamlit
+
+## Manual Setup (optional)
 
 ```bash
 python3 -m venv .venv
@@ -109,8 +126,7 @@ By default it writes to `pptx2nano_output/`:
 To use the local web UI:
 
 ```bash
-source .venv/bin/activate
-streamlit run streamlit_app.py
+./run_streamlit.sh
 ```
 
 Current behavior:

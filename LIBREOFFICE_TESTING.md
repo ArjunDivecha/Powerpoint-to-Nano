@@ -27,12 +27,12 @@ sudo apt install libreoffice-impress poppler-utils
 
 ```bash
 cd Powerpoint-to-Nano
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 cp .env.example .env
 # Add GEMINI_API_KEY to .env
+./setup.sh
 ```
+
+`./setup.sh` now bootstraps `.venv`, installs Python dependencies, and attempts LibreOffice/Poppler installation when supported package managers are available.
 
 ## 3. Quick CLI Smoke Test (Default = LibreOffice)
 
@@ -91,8 +91,7 @@ python pptx2nano.py /path/to/deck.pptx --pptx-method auto
 ## 6. Streamlit Check
 
 ```bash
-source .venv/bin/activate
-streamlit run streamlit_app.py
+./run_streamlit.sh
 ```
 
 For PPTX inputs, Streamlit currently uses LibreOffice conversion.

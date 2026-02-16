@@ -25,32 +25,24 @@ If you run with system Python instead of the repo venv, you may hit `google-gena
 ```bash
 git clone https://github.com/ArjunDivecha/Powerpoint-to-Nano.git
 cd Powerpoint-to-Nano
-
-# System deps
-# macOS:
-brew install --cask libreoffice
-brew install poppler  # optional but recommended
-
-# Linux (Ubuntu/Debian):
-# sudo apt update && sudo apt install libreoffice-impress poppler-utils
-
-# Python env
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
 cp .env.example .env
 # add GEMINI_API_KEY to .env
 
-# optional: raise default LibreOffice timeout for large decks
-export PPTX_LIBREOFFICE_TIMEOUT_SECONDS=300
+# bootstrap + launch
+./run_streamlit.sh
 ```
+
+`./run_streamlit.sh` calls `./setup.sh` automatically and bootstraps:
+- Python version check
+- LibreOffice installation (when supported package manager exists)
+- Optional Poppler install
+- `.venv` creation and dependency install
 
 ## Verification Checklist
 
 ```bash
 # 1) Python deps load
-source .venv/bin/activate
-python -c "import google.genai, docx, markdown, pypdf, streamlit; print('ok')"
+.venv/bin/python -c "import google.genai, docx, markdown, pypdf, streamlit; print('ok')"
 
 # 2) LibreOffice exists
 which soffice || which libreoffice
