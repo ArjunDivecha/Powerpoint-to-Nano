@@ -3,4 +3,6 @@ python-dotenv
 Pillow
 pdf2image
 python-pptx
+python-docx
+markdown
 streamlit

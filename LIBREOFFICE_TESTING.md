@@ -1,216 +1,125 @@
-# Testing LibreOffice PPTX Conversion
+# PPTX Rendering Guide (Current Behavior)
 
-This guide helps you test LibreOffice as a replacement for Keynote before committing to it.
+This guide documents how PPTX rendering works in the repo today.
 
-## Why Consider LibreOffice?
+## Current Reality
+- CLI (`pptx2nano.py`) defaults to LibreOffice rendering.
+- CLI supports `--pptx-method libreoffice|keynote|auto`.
+- Streamlit (`streamlit_app.py`) uses LibreOffice for PPTX conversion.
+- Keynote is optional and mainly useful for quality comparison on macOS.
 
-| Feature | Keynote | LibreOffice |
-|---------|---------|-------------|
-| **Platform** | macOS only | Windows, macOS, Linux |
-| **Cloud Deploy** | ❌ No | ✅ Yes |
-| **Cost** | Free (macOS) | Free |
-| **Quality** | Excellent | Good (may vary) |
-| **Speed** | Fast | Moderate |
+## 1. Install System Dependencies
 
-## Quick Test (Command Line)
-
-### 1. Install LibreOffice
-
-**macOS:**
+### macOS
 ```bash
 brew install --cask libreoffice
-# Optional: install poppler for faster PDF→PNG conversion
+# Optional but recommended for faster PDF -> PNG conversion
 brew install poppler
 ```
 
-**Linux (Ubuntu/Debian):**
+### Linux (Ubuntu/Debian)
 ```bash
+sudo apt update
 sudo apt install libreoffice-impress poppler-utils
 ```
 
-### 2. Run the Comparison Test
+## 2. Install Python Dependencies
 
 ```bash
 cd Powerpoint-to-Nano
-python test_converter.py /path/to/your/test.pptx
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+# Add GEMINI_API_KEY to .env
 ```
 
-This will:
-- Convert the PPTX using **Keynote** → `pptx_converter_test/keynote_output/`
-- Convert the PPTX using **LibreOffice** → `pptx_converter_test/libreoffice_output/`
-- Show a comparison summary
-
-### 3. Visually Compare Results
+## 3. Quick CLI Smoke Test (Default = LibreOffice)
 
 ```bash
-# Open both output folders
+source .venv/bin/activate
+python pptx2nano.py /path/to/deck.pptx --max-slides 1 --workers 1 --style minimalist --write-run-log
+```
+
+Expected output includes:
+- `[INFO] Rendering slides with libreoffice: ...`
+- `[DONE] Created: ...pdf`
+
+## 4. Renderer Comparison (Keynote vs LibreOffice)
+
+Use the comparison helper:
+
+```bash
+source .venv/bin/activate
+python test_converter.py /path/to/deck.pptx
+```
+
+This writes:
+- `pptx_converter_test/keynote_output/`
+- `pptx_converter_test/libreoffice_output/`
+
+On macOS, you can open both:
+
+```bash
 open pptx_converter_test/keynote_output/
 open pptx_converter_test/libreoffice_output/
 ```
 
-Compare the same slide numbers side-by-side. Check for:
-- Font rendering differences
-- Image quality
-- Layout shifts
-- Missing elements (charts, shapes)
-- Color accuracy
-
-## Test in Streamlit App
-
-### 1. Install LibreOffice (if not done above)
-
-### 2. Run the Streamlit App
+## 5. Explicit Renderer Selection in CLI
 
 ```bash
+# Default path
+python pptx2nano.py /path/to/deck.pptx --pptx-method libreoffice
+
+# Optional Keynote path on macOS
+python pptx2nano.py /path/to/deck.pptx --pptx-method keynote
+
+# Auto: try Keynote first on macOS, then LibreOffice
+python pptx2nano.py /path/to/deck.pptx --pptx-method auto
+```
+
+## 6. Streamlit Check
+
+```bash
+source .venv/bin/activate
 streamlit run streamlit_app.py
 ```
 
-### 3. Select Conversion Method
+For PPTX inputs, Streamlit currently uses LibreOffice conversion.
+The built-in "Choose file..." button currently uses `osascript`, so that file-picker flow is macOS-specific.
 
-When you load a PPTX file, you'll see a new toggle:
+## 7. Optional Integration Test (pytest)
 
-```
-[🍎 Keynote] [📄 LibreOffice]
-```
+`test_streamlit_libreoffice.py` contains:
+- one portable unit test (always runnable)
+- one optional real conversion test
 
-- Click **LibreOffice** to test the new method
-- Click **Keynote** to use the original method
-
-### 4. Compare Results
-
-Process the same PPTX with both methods and compare the generated slides.
-
-## Code Usage
-
-### In Python Scripts
-
-```python
-from pptx_converter import export_slides
-
-# Use Keynote (macOS only)
-slides = export_slides("deck.pptx", output_dir, method="keynote")
-
-# Use LibreOffice (cross-platform)
-slides = export_slides("deck.pptx", output_dir, method="libreoffice")
-
-# Auto-detect (uses Keynote on macOS if available, else LibreOffice)
-slides = export_slides("deck.pptx", output_dir, method="auto")
-```
-
-### In Your Modified Streamlit App
-
-The app now automatically shows the conversion method selector when:
-1. You're on macOS
-2. LibreOffice is installed
-3. You've selected a PPTX file
-
-The selected method is stored in `st.session_state["pptx_conversion_method"]`.
-
-## Making the Switch
-
-If LibreOffice quality is acceptable:
-
-### Option A: Environment Variable (Recommended)
-
-Set an environment variable to default to LibreOffice:
+Enable the real conversion test by setting a fixture file path:
 
 ```bash
-export PPTX_CONVERSION_METHOD=libreoffice
-streamlit run streamlit_app.py
+export P2N_TEST_PPTX=/absolute/path/to/sample.pptx
+pytest -q
 ```
 
-Then modify `streamlit_app.py` to read this:
-
-```python
-import os
-# ...
-default_method = os.getenv("PPTX_CONVERSION_METHOD", "keynote")
-st.session_state.setdefault("pptx_conversion_method", default_method)
-```
-
-### Option B: Hardcode the Change
-
-In `streamlit_app.py`, change the default:
-
-```python
-# Change this line
-conversion_method = st.session_state.get("pptx_conversion_method", "keynote")
-# To:
-conversion_method = st.session_state.get("pptx_conversion_method", "libreoffice")
-```
-
-### Option C: Remove Keynote Entirely
-
-Replace the import and usage:
-
-```python
-# Old
-import pptx2nano
-rendered_paths = pptx2nano.export_slides_with_keynote(...)
-
-# New
-from pptx_converter import export_slides
-rendered_paths = export_slides(..., method="libreoffice")
-```
-
-## Known Differences
-
-### LibreOffice May Produce:
-- Slightly different font rendering (substitutes missing fonts)
-- Different default slide dimensions
-- Slightly lower image quality (configurable via DPI)
-- Slower conversion (especially first run)
-
-### To Improve LibreOffice Quality:
-
-1. **Increase DPI** (default is 150):
-   ```python
-   slides = export_slides("deck.pptx", output_dir, method="libreoffice", dpi=300)
-   ```
-
-2. **Install Microsoft Fonts** (Linux):
-   ```bash
-   sudo apt install ttf-mscorefonts-installer
-   ```
-
-3. **Embed Fonts in PPTX** when saving from PowerPoint
+Without `P2N_TEST_PPTX`, the integration test is skipped.
 
 ## Troubleshooting
 
-### "LibreOffice not found"
+### `RuntimeError: LibreOffice not found`
+Install LibreOffice and verify:
 
-Install LibreOffice and ensure it's in your PATH:
 ```bash
 which soffice
 # or
 which libreoffice
 ```
 
-### "pdftoppm not found"
+### Interactions API errors (google-genai version mismatch)
+Run using the project venv interpreter:
 
-Install poppler:
 ```bash
-# macOS
-brew install poppler
-
-# Linux
-sudo apt install poppler-utils
+.venv/bin/python pptx2nano.py /path/to/deck.pptx --max-slides 1
 ```
 
-The converter will fall back to `pdf2image` if `pdftoppm` is not available.
-
-### Conversion is Slow
-
-- First conversion is slow (LibreOffice startup)
-- Subsequent conversions are faster
-- Increase timeout in code if needed:
-  ```python
-  # In pptx_converter.py, increase timeout
-  timeout=300  # 5 minutes instead of 2
-  ```
-
-## Deployment Ready
-
-Once you've verified LibreOffice works for your PPTX files, you can deploy to Railway (or any cloud platform) using the provided `Dockerfile` which includes LibreOffice.
-
-See the deployment guide for details.
+### First conversion is slow
+This is normal due to LibreOffice startup time. Subsequent conversions are faster.

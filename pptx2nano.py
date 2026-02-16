@@ -2,7 +2,7 @@
 """pptx2nano.py
 
 Purpose
-- Turn various input formats into redesigned slide decks by:
+- Turn a PPTX deck into redesigned slides by:
   1) Rendering each slide/page to an image
   2) Sending each image to Gemini Image to generate a redesigned graphic
   3) Combining all generated slide images into a single multi-page PDF
@@ -15,7 +15,7 @@ INPUT FILES (prominent)
 
 OUTPUT FILES (prominent)
 - Output folder (default: ./pptx2nano_output)
-  - Rendered slide images (from Keynote or conversion)
+  - Rendered slide images (from LibreOffice by default, or Keynote if selected)
     - {out_dir}/{deck_stem}/rendered/*.png
   - Generated slide images (from Gemini image model)
     - {out_dir}/{deck_stem}/generated/slide_###.png
@@ -25,21 +25,24 @@ OUTPUT FILES (prominent)
 Version History
 - v0.1.0 (2025-12-13): Initial version (PPTX -> Keynote render -> Gemini image per slide -> PDF)
 - v0.2.0 (2026-01-03): Added support for multiple input formats, text extraction, auto-detection
+- v0.3.0 (2026-02-16): CLI renderer selection added (`--pptx-method`), default now LibreOffice
 
 Last Updated
-- 2026-01-03
+- 2026-02-16
 
 Notes (for a 10th grader)
-- Keynote is used for PPTX files because it can "open" PowerPoint files and export each slide as a picture.
+- By default, we use LibreOffice to render PPTX slides into images.
+- You can still choose Keynote mode on macOS with `--pptx-method keynote`.
 - For other formats, we convert them to images first.
 - Then we send each image to Gemini and ask it to redraw the slide as a clean infographic.
 - Finally we put all the new slide pictures into a single PDF.
 - Text-heavy slides get special treatment with extracted text for better accuracy.
 
 Requirements
-- macOS with Keynote installed (for PPTX files)
+- LibreOffice installed (default PPTX renderer)
+- Keynote installed (optional, only if using `--pptx-method keynote` or `--pptx-method auto` on macOS)
 - A Gemini API key in .env (GEMINI_API_KEY=...)
-- Optional: python-pptx, pdf2image, docx, Pillow for other formats
+- Python dependencies from requirements.txt
 
 """
 
@@ -64,6 +67,7 @@ from google import genai
 from google.genai import types
 from PIL import Image
 import base64
+from pptx_converter import export_slides as export_pptx_slides
 
 
 DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
@@ -197,6 +201,15 @@ def _extract_last_int(text: str) -> int | None:
         return None
 
 
+def _prepare_rendered_dir(rendered_dir: Path) -> None:
+    """Create output directory and remove stale image files from prior runs."""
+    rendered_dir.mkdir(parents=True, exist_ok=True)
+    for pattern in ("*.png", "*.jpg", "*.jpeg"):
+        for old_file in rendered_dir.glob(pattern):
+            if old_file.is_file():
+                old_file.unlink()
+
+
 def _load_env() -> None:
     """Load environment variables from .env.
 
@@ -248,7 +261,7 @@ def export_slides_with_keynote(pptx_path: Path, rendered_dir: Path) -> list[Path
     - RuntimeError if export produced no PNGs.
     """
 
-    rendered_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_rendered_dir(rendered_dir)
 
     # AppleScript: use argv to avoid quoting issues.
     # IMPORTANT: macOS may prompt you to allow automation the first time.
@@ -559,6 +572,12 @@ def main():
         ),
     )
     parser.add_argument(
+        "--pptx-method",
+        choices=["libreoffice", "keynote", "auto"],
+        default="libreoffice",
+        help="PPTX rendering method (default: libreoffice).",
+    )
+    parser.add_argument(
         "--list-styles",
         action="store_true",
         help="Print built-in styles and exit",
@@ -611,9 +630,9 @@ def main():
     if selected_slides is not None and args.max_slides is not None:
         raise ValueError("Use either --slides or --max-slides, not both")
 
-    # 1) Render slides using Keynote
-    print(f"[INFO] Rendering slides with Keynote: {pptx_path}")
-    rendered_paths = export_slides_with_keynote(pptx_path, rendered_dir)
+    # 1) Render slides using selected method
+    print(f"[INFO] Rendering slides with {args.pptx_method}: {pptx_path}")
+    rendered_paths = export_pptx_slides(pptx_path, rendered_dir, method=args.pptx_method)
     full_total = len(rendered_paths)
 
     if args.max_slides is not None:
@@ -720,6 +739,7 @@ def main():
             "image_model": args.image_model,
             "style": args.style,
             "workers": args.workers,
+            "pptx_method": args.pptx_method,
             "max_slides": args.max_slides,
             "slides_selected": selected_slides,
             "slides": results_sorted,

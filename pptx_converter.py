@@ -25,6 +25,15 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 
+def _prepare_rendered_dir(rendered_dir: Path) -> None:
+    """Create output directory and remove stale image files from prior runs."""
+    rendered_dir.mkdir(parents=True, exist_ok=True)
+    for pattern in ("*.png", "*.jpg", "*.jpeg"):
+        for old_file in rendered_dir.glob(pattern):
+            if old_file.is_file():
+                old_file.unlink()
+
+
 def _extract_last_int(text: str) -> int | None:
     """Return the last integer found in text."""
     matches = re.findall(r"(\d+)", text)
@@ -62,7 +71,7 @@ def _find_libreoffice() -> str | None:
 
 def export_slides_with_keynote(pptx_path: Path, rendered_dir: Path) -> list[Path]:
     """Render PPTX slides into PNG images using Keynote via AppleScript."""
-    rendered_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_rendered_dir(rendered_dir)
 
     applescript = r'''on run argv
   set inputPosix to item 1 of argv
@@ -171,7 +180,7 @@ def export_slides_with_libreoffice(pptx_path: Path, rendered_dir: Path, dpi: int
     Returns:
         List of PNG paths in slide order
     """
-    rendered_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_rendered_dir(rendered_dir)
     
     libreoffice = _find_libreoffice()
     if not libreoffice:

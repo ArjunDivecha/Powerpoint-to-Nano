@@ -98,28 +98,31 @@ def _generate_one_style(
     t0 = time.time()
     prompt = _build_style_example_prompt(style_key, style_desc)
 
-    # Create client inside worker to avoid any potential thread-safety issues.
-    client = pptx2nano.create_client()
+    try:
+        # Create client inside worker to avoid any potential thread-safety issues.
+        client = pptx2nano.create_client()
 
-    interaction = client.interactions.create(
-        model=image_model,
-        input=[
-            {
-                "type": "image",
-                "data": base64.b64encode(base_image_bytes).decode("utf-8"),
-                "mime_type": base_mime_type,
-            },
-            {"type": "text", "text": prompt},
-        ],
-        response_modalities=["IMAGE"],
-    )
+        interaction = client.interactions.create(
+            model=image_model,
+            input=[
+                {
+                    "type": "image",
+                    "data": base64.b64encode(base_image_bytes).decode("utf-8"),
+                    "mime_type": base_mime_type,
+                },
+                {"type": "text", "text": prompt},
+            ],
+            response_modalities=["IMAGE"],
+        )
 
-    img_bytes, _mime = pptx2nano._extract_image_bytes_from_interaction(interaction)
+        img_bytes, _mime = pptx2nano._extract_image_bytes_from_interaction(interaction)
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(img_bytes)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(img_bytes)
 
-    return style_key, out_path, (time.time() - t0), None
+        return style_key, out_path, (time.time() - t0), None
+    except Exception as e:
+        return style_key, out_path, (time.time() - t0), str(e)
 
 
 def main() -> None:
@@ -199,7 +202,13 @@ def main() -> None:
             )
 
         for fut in concurrent.futures.as_completed(futures):
-            style_key, out_path, dt, err = fut.result()
+            try:
+                style_key, out_path, dt, err = fut.result()
+            except Exception as e:
+                style_key = "unknown"
+                out_path = Path("-")
+                dt = 0.0
+                err = str(e)
             done += 1
             if dt > 0:
                 durations.append(dt)

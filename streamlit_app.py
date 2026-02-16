@@ -5,15 +5,15 @@
 Purpose
 - Local Streamlit web UI for the PowerPoint-to-Nano pipeline.
 - Lets you:
-  - Pick various input files using native macOS file picker (PPTX, PDF, GIF, TXT, DOCX, images, Markdown)
-  - Render slides/pages via Keynote (PPTX) or conversion (other formats)
+  - Pick various input files using a native macOS file picker (AppleScript/osascript)
+  - Render slides/pages via LibreOffice (PPTX) or conversion utilities (other formats)
   - Generate / regenerate one slide at a time in a chosen style (Interactions API)
   - Auto-detect text-heavy slides for enhanced text extraction accuracy
   - Preview a PDF in-browser before saving
   - Save the PDF next to the input file as: <stem>_nano.pdf (overwrite)
 
 INPUT FILES (prominent)
-- Multiple formats supported via native file picker:
+- Multiple formats supported via the in-app picker:
   - PPTX (PowerPoint presentations)
   - PDF (multi-page documents)
   - GIF (animated graphics)
@@ -26,7 +26,7 @@ OUTPUT FILES (prominent)
 - Cached style example images (generated once per style):
   - {repo}/style_examples_cache/slide1/<style>.png
   - {repo}/style_examples_cache/slide2/<style>.png
-- Rendered slide images (Keynote exports or conversions):
+- Rendered slide images (LibreOffice exports or conversions):
   - {repo}/pptx2nano_output_streamlit/{deck_stem}/rendered/*.png
 - Final PDF (written only when you click Save):
   - {input_folder}/{input_stem}_nano.pdf
@@ -34,9 +34,10 @@ OUTPUT FILES (prominent)
 Version History
 - v0.1.0 (2025-12-13): Initial Streamlit UI with PPTX support only.
 - v0.2.0 (2026-01-03): Added multi-format support, text extraction, auto-detection, custom styles
+- v0.3.0 (2026-02-16): Streamlit PPTX path standardized on LibreOffice; docs aligned with current behavior
 
 Last Updated
-- 2026-01-03
+- 2026-02-16
 
 Features
 - 33+ built-in styles including ghibli-pride
@@ -45,6 +46,9 @@ Features
 - Text deduplication to prevent duplicate titles
 - Fresh regenerations (always from original, not previous generation)
 - Debug logging for text extraction decisions
+
+Platform Note
+- The "Choose file..." button currently uses AppleScript (`osascript`), which is macOS-specific.
 """
 
 from __future__ import annotations
