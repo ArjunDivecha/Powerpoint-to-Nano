@@ -60,7 +60,7 @@ from PIL import Image
 from pptx import Presentation
 
 import pptx2nano
-from pptx_converter import export_slides, _find_libreoffice
+from pptx_converter import export_slides
 
 
 def _pick_input_file() -> Path | None:
@@ -747,38 +747,13 @@ def main() -> None:
             st.success(f"Selected: {input_path}")
             st.caption(f"Type: {input_type.upper()}")
 
-        # Show PPTX conversion method selector (macOS only, when LibreOffice available)
+        # PPTX conversion info (LibreOffice is now the only method)
         if input_type == "pptx":
-            import platform
-            if platform.system() == "Darwin" and _find_libreoffice():
-                st.divider()
-                st.caption("PPTX Conversion Method")
-                method_col1, method_col2 = st.columns(2)
-                with method_col1:
-                    if st.button("🍎 Keynote", 
-                               type="primary" if st.session_state.get("pptx_conversion_method", "keynote") == "keynote" else "secondary",
-                               use_container_width=True):
-                        st.session_state["pptx_conversion_method"] = "keynote"
-                        st.rerun()
-                with method_col2:
-                    if st.button("📄 LibreOffice",
-                               type="primary" if st.session_state.get("pptx_conversion_method") == "libreoffice" else "secondary",
-                               use_container_width=True):
-                        st.session_state["pptx_conversion_method"] = "libreoffice"
-                        st.rerun()
-                
-                current_method = st.session_state.get("pptx_conversion_method", "libreoffice")
-                if current_method == "libreoffice":
-                    st.info("Using LibreOffice (cloud-compatible)")
-                else:
-                    st.caption("Using Keynote (macOS only)")
+            st.caption("📄 Using LibreOffice for PPTX conversion")
 
         st.subheader("2) Process Input")
-        # Update label based on selected conversion method
-        pptx_label = "Render slides"
-        if input_type == "pptx":
-            method = st.session_state.get("pptx_conversion_method", "libreoffice")
-            pptx_label = f"Render slides with {method.title()}"
+        # Render slides label
+        pptx_label = "Render slides with LibreOffice" if input_type == "pptx" else "Process file"
         
         process_label = {
             "pptx": pptx_label,
@@ -796,15 +771,8 @@ def main() -> None:
                 rendered_dir = out_dir / Path(input_path).stem / "rendered"
                 
                 if input_type == "pptx":
-                    # Choose conversion method: keynote (macOS) or libreoffice (cross-platform)
-                    conversion_method = st.session_state.get("pptx_conversion_method", "libreoffice")
-                    
-                    if conversion_method == "libreoffice":
-                        with st.spinner("Rendering slides using LibreOffice…"):
-                            rendered_paths = export_slides(Path(input_path), rendered_dir, method="libreoffice")
-                    else:
-                        with st.spinner("Rendering slides using Keynote…"):
-                            rendered_paths = export_slides(Path(input_path), rendered_dir, method="keynote")
+                    with st.spinner("Rendering slides using LibreOffice…"):
+                        rendered_paths = export_slides(Path(input_path), rendered_dir, method="libreoffice")
                 elif input_type == "pdf":
                     with st.spinner("Extracting PDF pages…"):
                         rendered_paths = _process_pdf_input(Path(input_path), rendered_dir)
