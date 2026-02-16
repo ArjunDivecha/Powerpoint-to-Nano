@@ -904,9 +904,9 @@ def main() -> None:
     slide_numbers = list(range(1, total_slides + 1))
 
     st.subheader("3) Generate / Regenerate a slide")
-    c1, c2, c3 = st.columns([1, 1, 2])
+    controls_col, action_col = st.columns([1, 2])
 
-    with c1:
+    with controls_col:
         # Get current slide index to maintain scroll position
         slide_options = ["ALL"] + slide_numbers
         current_slide = st.session_state.get("selected_slide", 1)
@@ -965,13 +965,7 @@ def main() -> None:
     slide_n = None if gen_target == "ALL" else int(gen_target)
     rendered_path = None if slide_n is None else rendered_paths[slide_n - 1]
 
-    with c2:
-        if slide_n is None:
-            st.caption("Generating ALL will iterate through the full deck.")
-        else:
-            st.image(str(rendered_path), caption=f"Original slide {slide_n}")
-
-    with c3:
+    with action_col:
         pptx_input_path = Path(input_path) if input_type == "pptx" else None
         pptx_slide_texts: list[str] = []
         if pptx_input_path and text_extraction_mode != "off":
@@ -1106,11 +1100,25 @@ def main() -> None:
                 except Exception as e:
                     st.error(str(e))
 
+    if slide_n is not None and rendered_path is not None:
+        st.caption("Exhibit comparison")
+        original_col, generated_col = st.columns([1, 1])
+        with original_col:
+            st.image(
+                str(rendered_path),
+                caption=f"Original slide {slide_n}",
+                use_container_width=True,
+            )
+        with generated_col:
             gen_bytes = st.session_state["generated_images"].get(slide_n)
             if gen_bytes:
-                st.image(gen_bytes, caption=f"Generated slide {slide_n}")
+                st.image(
+                    gen_bytes,
+                    caption=f"Generated slide {slide_n}",
+                    use_container_width=True,
+                )
             else:
-                st.caption("No generated image for this slide yet.")
+                st.info("No generated image for this slide yet.")
 
     st.divider()
 
